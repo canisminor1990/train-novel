@@ -1,4 +1,4 @@
-"""Continue a scene with a trained LoRA."""
+"""Write a chapter from a premise with a trained LoRA."""
 
 from __future__ import annotations
 
@@ -13,8 +13,9 @@ load_project_env()
 
 from unsloth import FastLanguageModel
 
-from novel_train.prompts import INSTRUCTIONS
-from novel_train.speak import prose_from_context
+from novel_train.ollama_bin import tokens_for
+from novel_train.prompts import DEFAULT_LENGTH, INSTRUCTIONS
+from novel_train.speak import prose_from_premise
 from novel_train.textutil import count_chars, tail_text
 
 
@@ -30,9 +31,11 @@ def read_context(args: argparse.Namespace) -> str:
         return resolve(args.context_file).read_text(encoding="utf-8")
     if args.text:
         return args.text
+    if args.premise:
+        return ""
     if not sys.stdin.isatty():
         return sys.stdin.read()
-    print("输入前情。单独一行输入 /// 后回车，开始续写。")
+    print("输入前情。单独一行输入 /// 后回车，开始写。")
     lines: list[str] = []
     while True:
         line = input()
@@ -64,8 +67,9 @@ def project_adapter(project_id: str | None) -> Path:
 
 def generate(args: argparse.Namespace) -> int:
     context = tail_text(read_context(args).strip(), args.context_chars)
-    if count_chars(context) < 20:
-        print("前情太短。")
+    premise = (args.premise or "").strip()
+    if not premise and count_chars(context) < 20:
+        print("给一个命题（--premise），或者至少 20 字的前情。")
         return 2
 
     adapter = resolve(args.adapter) if args.adapter else project_adapter(args.project)
@@ -87,13 +91,15 @@ def generate(args: argparse.Namespace) -> int:
         dtype=None,
     )
     FastLanguageModel.for_inference(model)
-    text = prose_from_context(
+    text = prose_from_premise(
         model,
         tokenizer,
+        premise,
+        args.length,
         context,
         instruction=args.instruction,
         max_seq_length=args.max_seq_length,
-        max_new_tokens=args.max_new_tokens,
+        max_new_tokens=args.max_new_tokens or tokens_for(args.length),
         temperature=args.temperature,
         top_p=args.top_p,
         repetition_penalty=args.repetition_penalty,
@@ -108,19 +114,21 @@ def generate(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     configure_stdio()
-    parser = argparse.ArgumentParser(description="用训好的 LoRA 按前文续写。")
+    parser = argparse.ArgumentParser(description="用训好的 LoRA 按命题写一章，也可以带一段前情。")
     parser.add_argument("--project", default=None, help="项目 ID。默认用它当前挂到 Ollama 的那次运行")
     parser.add_argument("--adapter", default=None, help="直接指定 LoRA 目录，优先于 --project")
-    parser.add_argument("--context-file", default=None)
-    parser.add_argument("--text", default=None)
+    parser.add_argument("--premise", default=None, help="命题：这一章写谁、在哪、发生什么")
+    parser.add_argument("--length", type=int, default=DEFAULT_LENGTH, help="大约写多少字")
+    parser.add_argument("--context-file", default=None, help="前情，可选")
+    parser.add_argument("--text", default=None, help="前情，可选")
     parser.add_argument("--output", default=None)
     parser.add_argument("--instruction", default=INSTRUCTIONS[0])
-    parser.add_argument("--context-chars", type=int, default=1200)
-    parser.add_argument("--max-seq-length", type=int, default=2048)
-    parser.add_argument("--max-new-tokens", type=int, default=512)
-    parser.add_argument("--temperature", type=float, default=0.85)
-    parser.add_argument("--top-p", type=float, default=0.9)
-    parser.add_argument("--repetition-penalty", type=float, default=1.08)
+    parser.add_argument("--context-chars", type=int, default=600)
+    parser.add_argument("--max-seq-length", type=int, default=8192)
+    parser.add_argument("--max-new-tokens", type=int, default=0, help="0 表示按字数估算")
+    parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--repetition-penalty", type=float, default=1.05)
     return generate(parser.parse_args(argv))
 
 

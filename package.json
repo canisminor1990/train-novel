@@ -1,7 +1,7 @@
 {
   "name": "train-novel",
   "private": true,
-  "description": "RTX 4090 上用 Unsloth 对 Qwen3.5-4B 做 bf16 LoRA，学自己长篇的文风",
+  "description": "RTX 4090 上用 Unsloth 对 Qwen3.5-4B / 9B 做 bf16 LoRA，学自己长篇的文风，按命题写整章",
   "scripts": {
     "start": "powershell -NoProfile -ExecutionPolicy Bypass -File start.ps1",
     "env:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1",

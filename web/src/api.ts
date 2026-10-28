@@ -35,6 +35,7 @@ export interface RunSummary {
   last_eval: number | null;
   last_loss: number | null;
   last_step: number;
+  model_label: string;
   mounted: boolean;
   next_action: RunAction | null;
   phase: string | null;
@@ -93,7 +94,7 @@ export interface ModelCheck {
 }
 
 export interface ActiveJob {
-  kind: 'train' | 'export';
+  kind: 'train' | 'export' | 'premise';
   pid: number;
   project: string;
   run: string;
@@ -101,6 +102,8 @@ export interface ActiveJob {
 }
 
 export interface ProjectSummary {
+  base_model: string;
+  base_model_label: string;
   book_names: string[];
   books: number;
   created: number;
@@ -140,17 +143,47 @@ export interface BookStats {
   junk_lines: number;
   merged_lines?: number;
   raw_chars?: number;
+  scene_breaks?: number;
   train: number;
+}
+
+export interface BaseModel {
+  id: string;
+  label: string;
+  selected: boolean;
+  summary: string;
+  vram_gb: number;
+}
+
+export type PremiseState = 'idle' | 'queued' | 'running' | 'done' | 'failed' | 'stopped' | 'interrupted';
+
+export interface PremiseStatus {
+  alive: boolean;
+  detail: string;
+  done: number | null;
+  eta: number | null;
+  passages: number;
+  state: PremiseState;
+  total: number | null;
+  with_premise: number;
 }
 
 export interface ProjectDetail extends ProjectSummary {
   active: ActiveJob | null;
   busy: string | null;
-  dataset: { books: BookStats[]; train_samples: number; eval_samples: number } | null;
+  dataset: {
+    books: BookStats[];
+    train_samples: number;
+    eval_samples: number;
+    passages?: number;
+    with_premise?: number;
+  } | null;
+  models: { items: BaseModel[]; selected: string };
+  premises: PremiseStatus;
   presets: { items: Preset[]; selected: string | null };
   raw_files: { name: string; bytes: number; modified: number }[];
   runs: RunSummary[];
-  samples: { book: string; chapter: string; input: string; output: string }[];
+  samples: { book: string; chapter: string; input: string; output: string; output_chars: number }[];
 }
 
 export interface CheckResult {
@@ -259,6 +292,9 @@ export const api = {
       remove_models: options.models,
     }),
   setPreset: (id: string, preset: string) => postJson(`/api/projects/${id}/preset`, { preset }),
+  setModel: (id: string, model: string) => postJson(`/api/projects/${id}/model`, { model }),
+  startPremises: (id: string) => postJson(`/api/projects/${id}/premises`),
+  stopPremises: (id: string) => postJson(`/api/projects/${id}/premises/stop`),
   removeBook: (id: string, name: string) =>
     postJson<{ ok: boolean; log: string }>(`/api/projects/${id}/files/delete`, { name }),
   train: (id: string) => postJson<{ ok: boolean; run: string }>(`/api/projects/${id}/train`),
@@ -268,7 +304,7 @@ export const api = {
   exportRun: (id: string, run: string, force = false) =>
     postJson(`/api/projects/${id}/runs/${run}/export`, force ? { force: true } : {}),
   deleteRun: (id: string, run: string) => postJson(`/api/projects/${id}/runs/${run}/delete`),
-  chat: (id: string, text: string) =>
-    postJson<{ ok: boolean; text: string; model: string }>(`/api/projects/${id}/chat`, { text }),
+  write: (id: string, request: { premise: string; length: number; context: string }) =>
+    postJson<{ ok: boolean; text: string; model: string }>(`/api/projects/${id}/chat`, request),
   check: () => postJson<CheckResult>('/api/check'),
 };

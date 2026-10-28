@@ -48,9 +48,9 @@ $dist = "web\dist\index.html"
 $needBuild = $Rebuild -or -not (Test-Path $dist)
 if (-not $needBuild) {
     $built = (Get-Item $dist).LastWriteTime
-    $changed = Get-ChildItem web\src, web\index.html, web\package.json -Recurse -File |
-        Where-Object { $_.LastWriteTime -gt $built } |
-        Select-Object -First 1
+    # PowerShell 5.1 给文件路径加 -Recurse 时会搜遍上级目录（含 node_modules）找同名文件，会崩。
+    $sources = @(Get-ChildItem web\src -Recurse -File) + @(Get-Item web\index.html, web\package.json)
+    $changed = $sources | Where-Object { $_.LastWriteTime -gt $built } | Select-Object -First 1
     $needBuild = $null -ne $changed
 }
 if ($needBuild) {

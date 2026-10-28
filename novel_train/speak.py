@@ -67,5 +67,5 @@ def continue_prose(
     return text.strip()
 
 
-def prose_from_context(model, tokenizer, context: str, **kwargs) -> str:
-    return continue_prose(model, tokenizer, build_user_input("", context), **kwargs)
+def prose_from_premise(model, tokenizer, premise: str, length: int, context: str = "", **kwargs) -> str:
+    return continue_prose(model, tokenizer, build_user_input(premise, "", length, context), **kwargs)

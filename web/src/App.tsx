@@ -58,10 +58,12 @@ function ActiveTag({ state }: { state: AppState | null }) {
   const run = project?.latest_run?.id === active.run ? project.latest_run : null;
   const percent =
     run?.progress != null && active.kind === 'train' ? ` ${Math.round(run.progress * 100)}%` : '';
+  const premise = active.kind === 'premise';
+  const label = premise ? '写命题中' : active.kind === 'train' ? '训练中' : '导出中';
   return (
-    <a href={href.run(active.project, active.run)}>
+    <a href={premise ? href.project(active.project, 'data') : href.run(active.project, active.run)}>
       <Tag color="processing" icon={<Icon aria-hidden spin icon={LoaderCircle} size={12} />}>
-        {project?.name ?? active.project} · {active.kind === 'train' ? '训练中' : '导出中'}
+        {project?.name ?? active.project} · {label}
         {percent}
       </Tag>
     </a>

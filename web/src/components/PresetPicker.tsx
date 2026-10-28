@@ -7,12 +7,8 @@ import { formatCount } from '../format';
 const styles = createStaticStyles(({ css, cssVar }) => ({
   grid: css`
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     gap: 12px;
-
-    @media (width <= 800px) {
-      grid-template-columns: 1fr;
-    }
   `,
   card: css`
     cursor: pointer;
@@ -67,7 +63,15 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   `,
 }));
 
-function facts(preset: Preset) {
+export interface Choice {
+  facts?: string;
+  id: string;
+  label: string;
+  selected: boolean;
+  summary: string;
+}
+
+export function presetFacts(preset: Preset) {
   const parts = [
     preset.max_steps ? `最多 ${preset.max_steps} 步` : `${preset.epochs} 轮`,
     `序列 ${preset.seq}`,
@@ -78,19 +82,21 @@ function facts(preset: Preset) {
   return parts.join(' · ');
 }
 
-export function PresetPicker({
-  presets,
+export function ChoiceCards({
+  choices,
+  label,
   disabled,
   onSelect,
 }: {
-  presets: Preset[];
+  choices: Choice[];
   disabled?: boolean;
+  label: string;
   onSelect: (id: string) => void;
 }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const selectedIndex = Math.max(
     0,
-    presets.findIndex((preset) => preset.selected),
+    choices.findIndex((choice) => choice.selected),
   );
 
   function onKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
@@ -102,39 +108,58 @@ export function PresetPicker({
           : 0;
     if (!delta) return;
     event.preventDefault();
-    const next = (index + delta + presets.length) % presets.length;
+    const next = (index + delta + choices.length) % choices.length;
     refs.current[next]?.focus();
-    onSelect(presets[next].id);
+    onSelect(choices[next].id);
   }
 
   return (
     <div
       aria-busy={disabled}
-      aria-label="训练预设"
+      aria-label={label}
       className={styles.grid}
       role="radiogroup"
-      title={disabled ? '正在保存预设' : undefined}
+      title={disabled ? '正在保存' : undefined}
     >
-      {presets.map((preset, index) => (
+      {choices.map((choice, index) => (
         <button
-          aria-checked={preset.selected}
-          className={cx(styles.card, preset.selected && styles.selected)}
+          aria-checked={choice.selected}
+          className={cx(styles.card, choice.selected && styles.selected)}
           disabled={disabled}
-          key={preset.id}
+          key={choice.id}
           role="radio"
           tabIndex={index === selectedIndex ? 0 : -1}
           type="button"
           ref={(node) => {
             refs.current[index] = node;
           }}
-          onClick={() => !preset.selected && onSelect(preset.id)}
+          onClick={() => !choice.selected && onSelect(choice.id)}
           onKeyDown={(event) => onKeyDown(event, index)}
         >
-          <span className={styles.label}>{preset.label}</span>
-          <Text type="secondary">{preset.summary}</Text>
-          <span className={styles.facts}>{facts(preset)}</span>
+          <span className={styles.label}>{choice.label}</span>
+          <Text type="secondary">{choice.summary}</Text>
+          {choice.facts ? <span className={styles.facts}>{choice.facts}</span> : null}
         </button>
       ))}
     </div>
+  );
+}
+
+export function PresetPicker({
+  presets,
+  disabled,
+  onSelect,
+}: {
+  presets: Preset[];
+  disabled?: boolean;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <ChoiceCards
+      choices={presets.map((preset) => ({ ...preset, facts: presetFacts(preset) }))}
+      disabled={disabled}
+      label="训练预设"
+      onSelect={onSelect}
+    />
   );
 }

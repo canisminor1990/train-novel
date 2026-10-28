@@ -64,8 +64,11 @@ def busy_reason(lock: dict | None = None) -> str | None:
         name = get_project(lock["project"]).meta().get("name")
     except LookupError:
         name = lock.get("project")
-    what = "训练" if lock.get("kind") == "train" else "导出"
+    what = KIND_LABELS.get(str(lock.get("kind")), "导出")
     return f"「{name}」正在{what}，显卡同一时间只跑一个任务。"
+
+
+KIND_LABELS = {"train": "训练", "export": "导出", "premise": "写命题"}
 
 
 def _rel(path: Path) -> str:
@@ -73,6 +76,17 @@ def _rel(path: Path) -> str:
 
 
 def _spawn(project: Project, run_dir: Path, kind: str, extra: list[str]) -> int:
+    return _spawn_job(
+        project,
+        run_dir.name,
+        kind,
+        "novel_train.jobs",
+        ["--project", project.id, "--run", run_dir.name, *extra],
+        run_dir / "job.log",
+    )
+
+
+def _spawn_job(project: Project, run: str, kind: str, module: str, args: list[str], log_path: Path) -> int:
     # venv's python.exe on Windows is a launcher. Popen.pid is that launcher,
     # while the job's os.getpid() is its child. A token lets the child replace
     # the lock with its own pid; recording the launcher pid makes the child
@@ -84,7 +98,7 @@ def _spawn(project: Project, run_dir: Path, kind: str, extra: list[str]) -> int:
             "pid": None,
             "token": token,
             "project": project.id,
-            "run": run_dir.name,
+            "run": run,
             "kind": kind,
             "pending": time.time(),
             "started": time.time(),
@@ -92,9 +106,9 @@ def _spawn(project: Project, run_dir: Path, kind: str, extra: list[str]) -> int:
     )
     try:
         process = spawn_module(
-            "novel_train.jobs",
-            ["--project", project.id, "--run", run_dir.name, *extra],
-            run_dir / "job.log",
+            module,
+            args,
+            log_path,
             f"任务 {kind} {time.strftime('%Y-%m-%d %H:%M:%S')}",
             {"NOVEL_JOB_TOKEN": token},
         )
@@ -115,6 +129,21 @@ def _adopt() -> bool:
         return False
     _claim(os.getpid(), str(lock.get("project")), str(lock.get("run")), str(lock.get("kind") or "train"), token)
     return True
+
+
+def hold_gpu(project: str, run: str, kind: str) -> int | None:
+    """For job processes that are not novel_train.jobs. Returns this pid, or None when busy."""
+    pid = os.getpid()
+    if not _adopt():
+        lock = active()
+        if lock is not None and lock.get("pid") != pid:
+            return None
+        _claim(pid, project, run, kind)
+    return pid
+
+
+def release_gpu(pid: int) -> None:
+    _release(pid)
 
 
 # ---------- dashboard side ----------
@@ -213,6 +242,47 @@ def stop(project: Project, run_dir: Path) -> dict:
     else:
         detail = "已暂停。还没有存下断点。"
     update_run(run_dir, state="stopped", detail=detail, ended=time.time())
+    return {"ok": True}
+
+
+def start_premises(project: Project) -> dict:
+    from novel_train.premise import pending_passages
+
+    reason = busy_reason()
+    if reason:
+        raise Conflict(reason)
+    todo, total = pending_passages(project.processed)
+    if not total:
+        raise ValueError("还没有切出样本。先导入小说。")
+    write_json(
+        project.root / "premise_status.json",
+        {"state": "queued", "done": total - len(todo), "total": total, "detail": "正在启动", "updated": time.time()},
+    )
+    pid = _spawn_job(project, "", "premise", "novel_train.premise", ["--project", project.id], project.root / "premise.log")
+    return {"ok": True, "pid": pid}
+
+
+def stop_premises(project: Project) -> dict:
+    lock = active()
+    if lock is None or lock.get("kind") != "premise" or lock.get("project") != project.id:
+        raise ValueError("这个项目没有在写命题。")
+    ok, message = kill_tree(int(lock["pid"]))
+    if not ok and pid_alive(lock["pid"]):
+        raise ValueError(message or "停止失败。")
+    LOCK.unlink(missing_ok=True)
+    from novel_train.projects import prepare
+
+    result = prepare(project)
+    stats = result.get("dataset") or {}
+    path = project.root / "premise_status.json"
+    status = read_json(path, {}) or {}
+    status.update(
+        state="stopped",
+        detail=f"已暂停。{stats.get('with_premise', 0)} 段有命题，已经用进样本，下次接着写剩下的。",
+        ended=time.time(),
+        updated=time.time(),
+    )
+    write_json(path, status)
     return {"ok": True}
 
 

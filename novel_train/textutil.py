@@ -204,6 +204,15 @@ def _is_chapter_title(line: str) -> bool:
     return bool(_CHAPTER_RE.match(line) or _SPECIAL_CHAPTER_RE.match(line))
 
 
+SCENE = "\x1e"
+_SCENE_RE = re.compile(r"^[\s*＊※◇◆○●□■☆★✧·•~～#＃=—\-_]{1,24}$")
+
+
+def _is_scene_break(line: str) -> bool:
+    """A separator line. In books without chapters it is often the only scene boundary."""
+    return not has_cjk(line) and bool(_RULE_RE.match(line) or _SCENE_RE.match(line))
+
+
 def _is_junk(line: str) -> bool:
     if _AD_RE.search(line):
         return True
@@ -268,10 +277,12 @@ def _paragraphs(lines: list[str]) -> tuple[list[str], int]:
     blocks: list[list[str]] = []
     current: list[str] = []
     for line in lines:
-        if not line:
+        if not line or line == SCENE:
             if current:
                 blocks.append(current)
                 current = []
+            if line == SCENE:
+                blocks.append([SCENE])
             continue
         current.append(line)
     if current:
@@ -280,15 +291,34 @@ def _paragraphs(lines: list[str]) -> tuple[list[str], int]:
     paragraphs: list[str] = []
     merged = 0
     for block in blocks:
+        if block == [SCENE]:
+            paragraphs.append(SCENE)
+            continue
         joined, count = _join_lines(block, _is_hard_wrapped(block))
         merged += count
         for paragraph in joined:
             paragraphs.extend(_split_long_line(paragraph))
-    return [paragraph for paragraph in paragraphs if has_cjk(paragraph)], merged
+    return [paragraph for paragraph in paragraphs if paragraph == SCENE or has_cjk(paragraph)], merged
+
+
+def _strip_scenes(paragraphs: list[str]) -> tuple[list[str], list[int]]:
+    kept: list[str] = []
+    breaks: list[int] = []
+    for paragraph in paragraphs:
+        if paragraph == SCENE:
+            if kept and (not breaks or breaks[-1] != len(kept)):
+                breaks.append(len(kept))
+            continue
+        kept.append(paragraph)
+    return kept, [index for index in breaks if index < len(kept)]
 
 
 def clean_document(text: str) -> tuple[list[tuple[str, list[str]]], dict]:
-    """Return (chapters, report). Each chapter is (title, paragraphs)."""
+    """Return (chapters, report). Each chapter is (title, paragraphs).
+
+    report["scene_breaks"] lists indices into the flattened paragraphs where a separator line
+    stood. The separators themselves are not kept in the text.
+    """
     report = {"junk_lines": 0, "duplicate_lines": 0, "merged_lines": 0, "duplicate_chapters": 0}
     lines: list[str] = []
     for raw in _normalize(text).splitlines():
@@ -296,6 +326,10 @@ def clean_document(text: str) -> tuple[list[tuple[str, list[str]]], dict]:
         if not line:
             if lines and lines[-1]:
                 lines.append("")
+            continue
+        if _is_scene_break(line):
+            if lines and lines[-1] != SCENE:
+                lines.append(SCENE)
             continue
         if _is_junk(line):
             report["junk_lines"] += 1
@@ -328,8 +362,11 @@ def clean_document(text: str) -> tuple[list[tuple[str, list[str]]], dict]:
 
     chapters: list[tuple[str, list[str]]] = []
     seen: set[str] = set()
+    breaks: list[int] = []
+    offset = 0
     for chapter_title, chapter_lines in raw_chapters:
         paragraphs, merged = _paragraphs(chapter_lines)
+        paragraphs, local_breaks = _strip_scenes(paragraphs)
         if not paragraphs:
             continue
         digest = hashlib.sha1("\n".join(paragraphs).encode("utf-8")).hexdigest()
@@ -339,6 +376,9 @@ def clean_document(text: str) -> tuple[list[tuple[str, list[str]]], dict]:
         seen.add(digest)
         report["merged_lines"] += merged
         chapters.append((chapter_title, paragraphs))
+        breaks.extend(offset + index for index in local_breaks)
+        offset += len(paragraphs)
+    report["scene_breaks"] = breaks
     return chapters, report
 
 
@@ -433,6 +473,141 @@ def iter_windows(
         start += max(step, 1)
 
 
+_TRANSITION_RE = re.compile(
+    r"^(?:第二天|第二日|次日|翌日|隔天|当晚|当夜|那晚|那夜|夜里|深夜|半夜|入夜|清晨|一早|早上|中午|傍晚|黄昏|"
+    r"[一二两三四五六七八九十几数半]+(?:个)?(?:天|日|夜|月|年|周|星期)(?:之?后|以后|过去)|"
+    r"多年(?:之?后|以后)|后来|与此同时|另一边|另一头|此时此刻|再说)"
+)
+_DIALOGUE_OPEN = ("“", "「", "『", "\"")
+
+
+def _cut_score(before: str, after: str, is_break: bool) -> float:
+    """How good it is to end one passage after `before` and start the next with `after`."""
+    score = 0.0
+    if is_break:
+        score += 6
+    if _TRANSITION_RE.match(after):
+        score += 3
+    if before and before[-1] in _SENT_END:
+        score += 1
+    else:
+        score -= 3
+    if before.startswith(_DIALOGUE_OPEN) and after.startswith(_DIALOGUE_OPEN):
+        score -= 2
+    elif after.startswith(_DIALOGUE_OPEN):
+        score -= 1
+    return score
+
+
+# 正文超过这个字数，加上命题和前情，按偏密的分词（约 1.2 字/token）就放不进 6144。
+TOKEN_CEILING = 6400
+
+
+def _piece_count(rest: int, target: int, floor: int, ceiling: int) -> int:
+    """How many pieces to cut `rest` characters into.
+
+    Pieces stay near `target`. They must not exceed `ceiling`, or the sample is
+    dropped before training. They stay at or above `floor` whenever a longer
+    piece still fits under the ceiling, so a 7000-character span is kept whole
+    instead of being halved into two passages under 4000.
+    """
+    if rest <= ceiling and rest <= int(target * 1.15):
+        return 1
+    count = max(1, round(rest / target)) if target else 1
+    count = max(count, -(-rest // ceiling) if ceiling else count)
+    while count > 1 and rest / count < floor and rest / (count - 1) <= ceiling:
+        count -= 1
+    return max(1, count)
+
+
+def _split_long(
+    paragraphs: list[str],
+    lengths: list[int],
+    base: int,
+    max_chars: int,
+    breaks,
+    min_chars: int = 0,
+    ceiling: int = TOKEN_CEILING,
+) -> list[tuple[int, int, int]]:
+    """Cut one long run of paragraphs into near-equal pieces, each ending at the best nearby boundary."""
+    pieces: list[tuple[int, int, int]] = []
+    start = 0
+    while True:
+        rest = sum(lengths[start:])
+        left = _piece_count(rest, max_chars, min_chars, ceiling)
+        if left <= 1:
+            break
+        target = rest / left
+        low = max(int(target * 0.75), min_chars)
+        high = min(target * 1.12, ceiling)
+        if low > high:
+            low = int(target * 0.7)
+        ceiling_chars = high
+        best: tuple[float, int, int] | None = None
+        fallback: tuple[float, int, int] | None = None
+        acc = 0
+        for index in range(start, len(paragraphs) - 1):
+            acc += lengths[index]
+            if fallback is None and acc >= target:
+                fallback = (0.0, index + 1, acc)
+            if acc < low:
+                continue
+            if acc > ceiling_chars:
+                break
+            score = _cut_score(paragraphs[index], paragraphs[index + 1], base + index + 1 in breaks)
+            score -= 2 * abs(acc - target) / target
+            if best is None or score > best[0]:
+                best = (score, index + 1, acc)
+        chosen = best or fallback
+        if chosen is None:
+            break
+        pieces.append((base + start, base + chosen[1], chosen[2]))
+        start = chosen[1]
+    pieces.append((base + start, base + len(paragraphs), sum(lengths[start:])))
+    return pieces
+
+
+def iter_passages(
+    chapters: list[tuple[str, list[str]]],
+    max_chars: int,
+    min_chars: int,
+    breaks: frozenset[int] | set[int] = frozenset(),
+    offset: int = 0,
+):
+    """Split chapters into passages. Each paragraph lands in exactly one passage.
+
+    A chapter longer than max_chars, or a whole book with no chapters at all, is cut into
+    near-equal parts that stay under the token ceiling. Each cut prefers a separator line,
+    then a time jump, then a sentence end, and avoids splitting a conversation. Short
+    chapters are joined until the group reaches min_chars. Yields dicts with title, start,
+    end (indices into the flattened paragraph list, counted from `offset`), chars, part, parts.
+    """
+    pending: dict | None = None
+    for title, paragraphs in chapters:
+        lengths = [count_chars(paragraph) for paragraph in paragraphs]
+        total = sum(lengths)
+        first, offset = offset, offset + len(paragraphs)
+        if not paragraphs:
+            continue
+        if total < min_chars:
+            if pending is None:
+                pending = {"title": title, "start": first, "end": offset, "chars": 0, "part": 1, "parts": 1}
+            pending["end"] = offset
+            pending["chars"] += total
+            if pending["chars"] >= min_chars:
+                yield pending
+                pending = None
+            continue
+        if pending is not None:
+            yield pending
+            pending = None
+        pieces = _split_long(paragraphs, lengths, first, max_chars, breaks, min_chars)
+        for part, (begin, end, chars) in enumerate(pieces, start=1):
+            yield {"title": title, "start": begin, "end": end, "chars": chars, "part": part, "parts": len(pieces)}
+    if pending is not None:
+        yield pending
+
+
 def self_check() -> None:
     body = "\n".join(
         f"第{index + 1}滴雨打在铁皮棚上，声音密得像有人筛豆子。"
@@ -484,4 +659,42 @@ def self_check() -> None:
         raise SystemExit(f"self-check failed: output length {output_size}")
     if count_chars(context) < 300:
         raise SystemExit("self-check failed: context too short")
-    print(f"self-check ok  ads={ads}  windows={len(windows)}  output_chars={output_size}")
+    # 不分章的长篇：约 2 万字，每千把字一条分隔线，中间夹着对话。
+    scenes = []
+    for scene in range(19):
+        lines = []
+        for index in range(30):
+            if index % 6 == 3:
+                lines.append(f"“第{scene + 1}场，你听见了吗？”")
+                lines.append("“听见了。”")
+            else:
+                lines.append(f"风从河面上压过来，他把领子竖起，数着桥上的灯一盏一盏地灭，第{scene + 1}场第{index + 1}段。")
+        scenes.append("\n".join(lines))
+    unchaptered, unchaptered_report = clean_document("\n\n＊　＊　＊\n\n".join(scenes))
+    if len(unchaptered) != 1 or unchaptered[0][0] != "正文":
+        raise SystemExit("self-check failed: unchaptered book grew chapters")
+    breaks = frozenset(unchaptered_report["scene_breaks"])
+    if len(breaks) != 18:
+        raise SystemExit(f"self-check failed: expected 18 scene breaks, got {len(breaks)}")
+    passages = list(iter_passages(unchaptered, 6000, 4000, breaks))
+    covered = [index for passage in passages for index in range(passage["start"], passage["end"])]
+    if covered != list(range(len(unchaptered[0][1]))):
+        raise SystemExit("self-check failed: passages skip or repeat paragraphs")
+    sizes = [passage["chars"] for passage in passages]
+    if min(sizes) < 4000 or max(sizes) > TOKEN_CEILING:
+        raise SystemExit(f"self-check failed: passage sizes {sizes}")
+    on_break = sum(1 for passage in passages[1:] if passage["start"] in breaks)
+    if on_break < len(passages[1:]) * 0.8:
+        raise SystemExit(f"self-check failed: only {on_break}/{len(passages) - 1} cuts land on separators")
+    flat = unchaptered[0][1]
+    if any(flat[passage["start"]].startswith("“") and flat[passage["start"] - 1].startswith("“") for passage in passages[1:]):
+        raise SystemExit("self-check failed: a cut splits a conversation")
+
+    short = [("第一章 长", flat[:40]), ("第二章 短", ["很短的一章。"]), ("第三章 也短", ["又一章。" * 30])]
+    grouped = list(iter_passages(short, 3000, 800))
+    if [index for passage in grouped for index in range(passage["start"], passage["end"])] != list(range(42)):
+        raise SystemExit("self-check failed: short chapters were not kept")
+    print(
+        f"self-check ok  ads={ads}  windows={len(windows)}  output_chars={output_size}  "
+        f"passages={len(passages)}  on_separator={on_break}/{len(passages) - 1}  sizes={min(sizes)}-{max(sizes)}"
+    )

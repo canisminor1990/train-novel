@@ -16,6 +16,7 @@ import { useState } from 'react';
 
 import { api, type BookStats, type ProjectDetail, uploadBooks } from '../../api';
 import { formatBytes, formatChars, formatCount, isLive } from '../../format';
+import { PremisePanel } from './PremisePanel';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   sample: css`
@@ -129,7 +130,7 @@ export function DataTab({ project, onChange }: { project: ProjectDetail; onChang
         description={
           uploading
             ? '正在保存并切分，长篇可能要几十秒'
-            : 'txt 用 UTF-8 或 GB18030 都可以。同名文件会覆盖。导入后会立刻切成「前情 → 续写」样本。'
+            : 'txt 用 UTF-8 或 GB18030 都可以，分不分章都行。同名文件会覆盖。导入后会立刻切成一章长短的样本。'
         }
         onFiles={(files) => void onFiles(files)}
       />
@@ -156,11 +157,12 @@ export function DataTab({ project, onChange }: { project: ProjectDetail; onChang
             {
               label: '验证样本',
               value: formatCount(project.dataset?.eval_samples),
-              hint: '每本最后一段，不参与训练',
+              hint: '每本结尾留出的一段，不参与训练',
             },
           ]}
         />
       ) : null}
+      {project.ready ? <PremisePanel project={project} onChange={onChange} /> : null}
       <Surface
         bleed
         description="导入时自动清洗：去掉网址、广告、作者的话和页码，接回排版断开的行，合并多余空行和重复章节，统一省略号、破折号和中文标点。对话每句仍各占一段。"
@@ -205,7 +207,8 @@ export function DataTab({ project, onChange }: { project: ProjectDetail; onChang
               title: '章节',
               width: 80,
               align: 'end',
-              render: (_, row) => (row.stats ? formatCount(row.stats.chapters) : '—'),
+              render: (_, row) =>
+                !row.stats ? '—' : row.stats.chapters ? formatCount(row.stats.chapters) : '不分章',
             },
             {
               key: 'cleaning',
@@ -243,7 +246,7 @@ export function DataTab({ project, onChange }: { project: ProjectDetail; onChang
       </Surface>
       {project.samples.length ? (
         <Surface
-          description="模型看到左边的前情，学着写出右边这一段。只截了开头和结尾的一部分。"
+          description="模型看到左边的命题、字数和前情，学着写出右边这一整段。长的地方只截了开头。不分章的书按分隔线、时间跳转和句末切段，不会切在对话中间。"
           title="样本长什么样"
         >
           <Flexbox gap={20}>
@@ -255,11 +258,13 @@ export function DataTab({ project, onChange }: { project: ProjectDetail; onChang
                 </Text>
                 <div className={styles.sample}>
                   <div>
-                    <div className={styles.caption}>前情（末尾）</div>
-                    <pre className={styles.prose}>…{sample.input}</pre>
+                    <div className={styles.caption}>给模型的要求</div>
+                    <pre className={styles.prose}>{sample.input}</pre>
                   </div>
                   <div>
-                    <div className={styles.caption}>要学会写的续写</div>
+                    <div className={styles.caption}>
+                      要学会写的正文 · {formatChars(sample.output_chars)}
+                    </div>
                     <pre className={styles.prose}>{sample.output}…</pre>
                   </div>
                 </div>

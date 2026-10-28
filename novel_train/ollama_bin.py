@@ -116,23 +116,52 @@ def forget_cache() -> None:
     _cache["at"] = 0.0
 
 
-def chat(model: str, context: str, temperature: float = 0.8) -> str:
+def _post(path: str, payload: dict, timeout: float) -> dict:
+    request = urllib.request.Request(
+        f"{OLLAMA_URL}{path}",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def unload_all() -> list[str]:
+    """Evict every model Ollama keeps in VRAM. A 64K-context model holds ~5GB, which 9B training needs."""
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/ps", timeout=3) as response:
+            running = json.loads(response.read().decode("utf-8")).get("models") or []
+    except (urllib.error.URLError, OSError, ValueError):
+        return []
+    names = [str(item.get("name") or item.get("model")) for item in running if item.get("name") or item.get("model")]
+    for name in names:
+        try:
+            _post("/api/generate", {"model": name, "keep_alive": 0}, timeout=30)
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+    if names:
+        print(f"已让 Ollama 释放显存：{'、'.join(names)}", flush=True)
+        time.sleep(2)
+    return names
+
+
+# 中文约 1.3 字一个 token。多给一半，让模型自己在章末收尾，而不是被截断。
+def tokens_for(chars: int) -> int:
+    return int(chars / 1.3 * 1.5) + 256
+
+
+def chat(model: str, system: str, user: str, length: int, temperature: float = 0.8) -> str:
     payload = {
         "model": model,
         "stream": False,
         "messages": [
-            {"role": "user", "content": f"前情：\n{context}"},
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
         ],
-        "options": {"temperature": temperature},
+        "options": {"temperature": temperature, "num_predict": tokens_for(length)},
     }
-    request = urllib.request.Request(
-        f"{OLLAMA_URL}/api/chat",
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-    )
     try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        data = _post("/api/chat", payload, timeout=900)
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"Ollama 返回 {exc.code}。确认 {model} 还在 ollama list 里。") from exc
     except urllib.error.URLError as exc:

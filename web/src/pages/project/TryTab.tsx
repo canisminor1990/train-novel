@@ -5,6 +5,7 @@ import {
   CopyButton,
   createStaticStyles,
   Flexbox,
+  InputNumber,
   Tag,
   Text,
   TextArea,
@@ -15,11 +16,14 @@ import { PenLine } from 'lucide-react';
 import { useState } from 'react';
 
 import { api, type ProjectDetail } from '../../api';
-import { runName } from '../../format';
+import { formatChars, runName } from '../../format';
 import { go, href } from '../../router';
 
-const MIN = 20;
-const MAX = 60_000;
+const PREMISE_MIN = 4;
+const PREMISE_MAX = 2000;
+const CONTEXT_MAX = 30_000;
+const LENGTH_MIN = 300;
+const LENGTH_MAX = 8000;
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   prose: css`
@@ -35,15 +39,22 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 
     background: ${cssVar.colorFillQuaternary};
   `,
+  field: css`
+    font-size: 13px;
+    color: ${cssVar.colorTextSecondary};
+  `,
 }));
 
 export function TryTab({ project }: { project: ProjectDetail }) {
+  const [premise, setPremise] = useState('');
   const [context, setContext] = useState('');
+  const [length, setLength] = useState(5000);
   const [prose, setProse] = useState('');
   const [writing, setWriting] = useState(false);
   const { ollama } = project;
   const mounted = project.runs.find((run) => run.id === project.mounted_run);
-  const length = context.trim().length;
+  const premiseLength = premise.trim().length;
+  const contextLength = context.trim().length;
 
   let blocked: string | null = null;
   if (!ollama.installed) blocked = '没有找到 ollama.exe。装好 Ollama 后刷新这一页。';
@@ -51,28 +62,28 @@ export function TryTab({ project }: { project: ProjectDetail }) {
     blocked = project.runs.some((run) => run.has_adapter)
       ? `${ollama.model} 还没挂上。到运行详情里点「继续」，导出写完后会挂上。`
       : `${ollama.model} 还没挂上。训练一次，结束后会自动挂载。`;
-  else if (project.busy) blocked = `${project.busy}等它结束再续写，避免抢显存。`;
+  else if (project.busy) blocked = `${project.busy}等它结束再写，避免抢显存。`;
+
+  const invalid =
+    premiseLength < PREMISE_MIN
+      ? `命题至少 ${PREMISE_MIN} 个字`
+      : premiseLength > PREMISE_MAX
+        ? `命题最多 ${PREMISE_MAX} 字，细节放进前情`
+        : contextLength > CONTEXT_MAX
+          ? `前情超过 ${CONTEXT_MAX} 字，先截到最近的一段`
+          : null;
 
   async function send() {
     setWriting(true);
     try {
-      const result = await api.chat(project.id, context);
+      const result = await api.write(project.id, { premise, length, context });
       setProse(result.text || '模型没有写出正文。');
     } catch (exc) {
-      toast.error(exc instanceof Error ? exc.message : '续写失败');
+      toast.error(exc instanceof Error ? exc.message : '没写出来');
     } finally {
       setWriting(false);
     }
   }
-
-  const hint =
-    length === 0
-      ? `至少 ${MIN} 字`
-      : length < MIN
-        ? `还差 ${MIN - length} 字`
-        : length > MAX
-          ? `超过 ${MAX} 字，先截到最近的一段`
-          : `${length} 字`;
 
   return (
     <Flexbox gap={24}>
@@ -84,7 +95,8 @@ export function TryTab({ project }: { project: ProjectDetail }) {
           {ollama.ready ? <Tag color="success">已挂载</Tag> : <Tag>未挂载</Tag>}
           {mounted ? (
             <Text type="secondary">
-              来自 <a href={href.run(project.id, mounted.id)}>{runName(mounted)} 的运行</a>
+              来自 <a href={href.run(project.id, mounted.id)}>{runName(mounted)} 的运行</a> ·{' '}
+              {mounted.model_label}
             </Text>
           ) : null}
           {ollama.ready ? (
@@ -115,33 +127,58 @@ export function TryTab({ project }: { project: ProjectDetail }) {
         />
       ) : null}
       <Surface
-        description="这里调用本机 Ollama 里的模型，不会再把 LoRA 载入显存。一次写一个场景，把角色状态和前情一起贴进来。"
-        title="贴一段前情"
+        description="调用本机 Ollama 里的模型，不会再把 LoRA 载入显存。命题写清楚这一章谁出场、在哪、发生什么、停在哪；写得越具体，跑题越少。一次写一章，4000 到 6500 字最稳，更长就分章写，把上一章的结尾贴进前情。"
+        title="给一个命题"
       >
         <Flexbox gap={12}>
           <TextArea
-            aria-label="前情"
-            autoSize={{ minRows: 6, maxRows: 16 }}
-            placeholder={`贴一段至少 ${MIN} 个字的前情`}
+            aria-label="命题"
+            autoSize={{ minRows: 3, maxRows: 10 }}
+            placeholder="例如：雨夜，沈砚在旧码头等一个十年没见的人。来的却是对方的女儿，带着一封没寄出的信。两人从戒备到松动，最后停在她说出父亲死因的那一刻。"
+            value={premise}
+            onChange={(event) => setPremise(event.target.value)}
+          />
+          <Flexbox horizontal align="center" gap={8}>
+            <span className={styles.field}>大约写</span>
+            <InputNumber
+              aria-label="字数"
+              max={LENGTH_MAX}
+              min={LENGTH_MIN}
+              step={500}
+              value={length}
+              onChange={(value) => setLength(typeof value === 'number' ? value : 5000)}
+            />
+            <span className={styles.field}>字</span>
+          </Flexbox>
+          <TextArea
+            aria-label="前情（可选）"
+            autoSize={{ minRows: 2, maxRows: 10 }}
+            placeholder="前情，可选。接着已有的章节写时，贴上一章最后几百字。"
             value={context}
             onChange={(event) => setContext(event.target.value)}
           />
           <Flexbox horizontal align="center" gap={12}>
             <Button
-              disabled={Boolean(blocked) || length < MIN || length > MAX}
+              disabled={Boolean(blocked) || Boolean(invalid)}
               icon={PenLine}
               loading={writing}
               type="primary"
               onClick={() => void send()}
             >
-              {writing ? '正在续写，最长 3 分钟' : '续写'}
+              {writing ? '正在写，一般 1 到 3 分钟' : '写这一章'}
             </Button>
-            <Text type={length > MAX ? 'danger' : 'secondary'}>{hint}</Text>
+            <Text type={invalid && premiseLength > 0 ? 'danger' : 'secondary'}>
+              {invalid ?? `命题 ${premiseLength} 字${contextLength ? ` · 前情 ${contextLength} 字` : ''}`}
+            </Text>
           </Flexbox>
         </Flexbox>
       </Surface>
       {prose ? (
-        <Surface extra={<CopyButton content={prose} title="复制续写" />} title="续写">
+        <Surface
+          description={formatChars(prose.replaceAll(/\s/g, '').length)}
+          extra={<CopyButton content={prose} title="复制正文" />}
+          title="正文"
+        >
           <pre className={styles.prose}>{prose}</pre>
         </Surface>
       ) : null}

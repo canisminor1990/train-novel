@@ -11,12 +11,12 @@ from novel_train.envload import ROOT
 from novel_train.export_ollama import build_dir, merged_model_ready
 from novel_train.ollama_bin import think_model_name
 from novel_train.jsonio import dir_size, read_json, read_jsonl, tail_text, write_json
+from novel_train.models import MODELS, model_key, model_label
 from novel_train.pipeline import view as stage_view
 from novel_train.presets import preset_config, preset_label
 from novel_train.projects import Project, dataset, readiness
 
 BASE_CONFIG = ROOT / "configs" / "sft_4090.json"
-MODEL_NAME = "unsloth/Qwen3.5-4B"
 EVAL_CAP = 200
 LIVE_STATES = {"queued", "running"}
 
@@ -40,11 +40,11 @@ def base_config() -> dict:
 
 
 def locked(cfg: dict) -> dict:
-    if cfg.get("model_name", MODEL_NAME) != MODEL_NAME:
-        raise ValueError("配置必须是 unsloth/Qwen3.5-4B，这次没有开训。")
+    if model_key(cfg.get("model_name")) is None:
+        allowed = "、".join(spec["name"] for spec in MODELS.values())
+        raise ValueError(f"模型只能是 {allowed}，这次没有开训。")
     if cfg.get("load_in_4bit") or cfg.get("load_in_16bit") is False:
         raise ValueError("Qwen3.5 使用 bf16 LoRA，这次没有开训。")
-    cfg["model_name"] = MODEL_NAME
     cfg["load_in_4bit"] = False
     cfg["load_in_16bit"] = True
     cfg["per_device_train_batch_size"] = 1
@@ -67,7 +67,8 @@ def create_run(project: Project) -> Path:
         raise ValueError(reason)
     meta = project.meta()
     preset = meta.get("preset")
-    cfg = locked({**base_config(), **preset_config(preset)})
+    base = project.base_model
+    cfg = locked({**base_config(), **preset_config(preset), "model_name": MODELS[base]["name"]})
     run_dir = project.runs / _new_run_id(project)
     data_dir = run_dir / "data"
     data_dir.mkdir(parents=True)
@@ -88,6 +89,7 @@ def create_run(project: Project) -> Path:
             "id": run_dir.name,
             "project": project.id,
             "preset": preset,
+            "base_model": base,
             "created": now,
             "started": None,
             "ended": None,
@@ -190,6 +192,14 @@ def decide_action(
     return None
 
 
+def _model_label(run_dir: Path, meta: dict) -> str:
+    key = meta.get("base_model")
+    if key in MODELS:
+        return MODELS[key]["label"]
+    cfg = read_json(run_dir / "config.json", {}) or {}
+    return model_label(cfg.get("model_name") or MODELS["4b"]["name"])
+
+
 def summary(project: Project, run_dir: Path, active_run: str | None, mounted_run: str | None) -> dict:
     meta = run_meta(run_dir)
     alive = active_run == run_dir.name
@@ -211,6 +221,7 @@ def summary(project: Project, run_dir: Path, active_run: str | None, mounted_run
         "project": project.id,
         "preset": meta.get("preset"),
         "preset_label": preset_label(meta.get("preset")),
+        "model_label": _model_label(run_dir, meta),
         "state": state,
         "detail": detail,
         "created": meta.get("created"),

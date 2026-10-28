@@ -3,25 +3,38 @@
 from __future__ import annotations
 
 INSTRUCTIONS = [
-    "请用以下小说的文风续写，保持叙述视角、句式节奏和用词习惯一致。",
-    "根据前情续写小说正文，保持人称、口吻和叙事节奏不变。只写正文。",
-    "顺着下面的情节继续写。不要总结，不要点评，不要重复前情。",
+    "你是这部小说的作者。按命题写小说正文，保持原作的叙述视角、句式节奏和用词习惯。写够要求的字数，只写正文。",
+    "按下面的命题写一章小说正文。人称、口吻和叙事节奏和原作一致，场景要写足，不要总结，不要点评。",
+    "根据命题写小说正文，写到要求的字数为止。有前情时接着前情往下写，不要重复前情。",
 ]
+DEFAULT_LENGTH = 5000
 
 
 def instruction_for(index: int) -> str:
     return INSTRUCTIONS[index % len(INSTRUCTIONS)]
 
 
-def build_user_input(chapter: str, context: str) -> str:
-    context = context.strip()
-    if chapter:
-        return f"章节：{chapter}\n前情：\n{context}"
-    return f"前情：\n{context}"
+def round_length(chars: int) -> int:
+    return max(100, int(round(chars / 100.0)) * 100)
+
+
+def build_user_input(premise: str = "", chapter: str = "", length: int = 0, context: str = "") -> str:
+    lines = []
+    if premise.strip():
+        lines.append(f"命题：{premise.strip()}")
+    if chapter.strip():
+        lines.append(f"章节：{chapter.strip()}")
+    if length:
+        lines.append(f"字数：约 {round_length(length)} 字")
+    if context.strip():
+        lines.append(f"前情：\n{context.strip()}")
+    if not premise.strip() and not context.strip():
+        lines.append("接着写这部小说的下一段。")
+    return "\n".join(lines)
 
 
 def render_chat(tokenizer, messages: list[dict[str, str]], add_generation_prompt: bool) -> str:
-    """Qwen3.5 会插入思考段。小说续写只学正文，所以关掉 thinking。"""
+    """Qwen3.5 会插入思考段。小说正文只学正文，所以关掉 thinking。"""
     try:
         return tokenizer.apply_chat_template(
             messages,

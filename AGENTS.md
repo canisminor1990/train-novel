@@ -2,13 +2,13 @@
 
 改训练、切数据或训练后台之前，先读 `.agents/train-novel/SKILL.md`。
 
-这个仓库在一张 RTX 4090 上，把用户自己的长篇切成「前情 → 续写」，再用 Unsloth 对 `unsloth/Qwen3.5-4B` 做 bf16 LoRA。
+这个仓库在一张 RTX 4090 上，把用户自己的长篇切成「命题 → 一整章正文」（分不分章都行），再用 Unsloth 对 `unsloth/Qwen3.5-4B` 或 `unsloth/Qwen3.5-9B`（每个项目自己选）做 bf16 LoRA。目标是给一个命题就能写出长文，不要把样本回答改回两三百字。
 
 - 命令从仓库根目录运行，使用 `.venv`。常用入口在根目录 `package.json`（`pnpm start` 一键启动，`pnpm lint`、`pnpm build`），逻辑放在 `start.ps1`、`setup.ps1` 和 Python 模块里，`package.json` 只做转发。
 - 每次训练任务属于一个项目，数据和产物都在 `projects/<项目>/` 下，不要跨项目共用。小说只放项目的 `raw/`。以「示例」开头的文件在有正式书时会被跳过。
 - 训练集里只有示例书时，不要启动训练。
 - 前端改完在 `web` 里跑 `pnpm lint` 和 `pnpm build`。
-- Qwen3.5 用 bf16 LoRA，不要改回 4bit QLoRA。Qwen3.6-27B 需要约 56GB，不要换成它。
+- Qwen3.5 用 bf16 LoRA，不要改回 4bit QLoRA。9B 约 22GB，已是这张卡的上限；Qwen3.6-27B 需要约 56GB，不要加它。
 - 先用一本目标长篇跑通，再加同一作者的几本。不要把不同题材混成一个任务。
 - 后台是 `python -m novel_train.dashboard`，地址 http://127.0.0.1:8765 。不要把它改成监听公网。
 - 不要提交 `.env`、`outputs/`、`projects/`、`data/processed/` 和用户原文。

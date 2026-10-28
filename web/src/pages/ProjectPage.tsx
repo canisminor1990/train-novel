@@ -53,6 +53,7 @@ export function ProjectPage({
     project.books
       ? `${project.books} 本 · ${formatCount(project.train_samples)} 条样本`
       : '还没有书',
+    project.base_model_label,
     `Ollama ${project.ollama.model}，带思考 ${project.ollama.think_model}`,
   ].join(' · ');
 
@@ -132,7 +133,7 @@ export function ProjectPage({
             count: project.runs.length || undefined,
             content: <RunsTab project={project} onChange={refresh} />,
           },
-          { value: 'try', label: '续写', content: <TryTab project={project} /> },
+          { value: 'try', label: '写作', content: <TryTab project={project} /> },
         ]}
         onChange={(next) => go(href.project(project.id, next))}
       />

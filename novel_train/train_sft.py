@@ -23,6 +23,8 @@ from trl import SFTConfig, SFTTrainer
 from novel_train.compat import call_accepting
 from novel_train.guards import reject_sample_only
 from novel_train.metrics import attach_jsonl_callback
+from novel_train.models import MODELS, model_key, model_label, model_spec
+from novel_train.ollama_bin import tokens_for
 from novel_train.pipeline import end_current, estimate_remaining, log_progress, set_stage
 from novel_train.prompts import render_chat, to_messages
 from novel_train.speak import continue_prose, text_tokenizer
@@ -134,7 +136,7 @@ def write_preview(model, tokenizer, example: dict, output_dir: Path, max_seq_len
         example["input"],
         instruction=example["instruction"],
         max_seq_length=max_seq_length,
-        max_new_tokens=256,
+        max_new_tokens=min(2400, tokens_for(len(example["output"]))),
     )
     preview = output_dir / "sample_preview.txt"
     preview.write_text(
@@ -160,8 +162,8 @@ def train(config_path: str, resume: str | None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     if not train_path.exists():
         raise SystemExit(f"找不到训练集 {train_path}。先运行 python -m novel_train.prepare")
-    if cfg.get("model_name") != "unsloth/Qwen3.5-4B":
-        raise SystemExit("这张卡只训练 unsloth/Qwen3.5-4B。")
+    if model_key(cfg.get("model_name")) is None:
+        raise SystemExit("这张卡只训练 " + "、".join(spec["name"] for spec in MODELS.values()) + "。")
     if cfg.get("load_in_4bit") or not cfg.get("load_in_16bit", True):
         raise SystemExit("Qwen3.5 使用 bf16 LoRA。")
     reject_sample_only(train_path)
@@ -170,18 +172,45 @@ def train(config_path: str, resume: str | None) -> None:
         json.dumps(cfg, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    set_stage(output_dir, "load", "running", None, "正在把 Qwen3.5-4B 载入显存")
+    set_stage(output_dir, "load", "running", None, _loading(cfg))
     try:
         _train_body(cfg, train_path, eval_path, output_dir, resume)
     except BaseException as exc:
         if isinstance(exc, KeyboardInterrupt):
             end_current(output_dir, "stopped", "已中断")
         else:
-            end_current(output_dir, "failed", str(exc) or type(exc).__name__)
+            end_current(output_dir, "failed", _failure(cfg, exc))
         raise
 
 
-def _watch_load(output_dir: Path, stop: threading.Event) -> None:
+def _loading(cfg: dict) -> str:
+    return f"正在把 {model_label(cfg['model_name'])} 载入显存"
+
+
+def _failure(cfg: dict, exc: BaseException) -> str:
+    text = str(exc) or type(exc).__name__
+    if "out of memory" in text.lower():
+        if model_key(cfg["model_name"]) == "9b":
+            return "显存不够。9B 要约 22GB：关掉游戏、浏览器硬件加速和别的模型后从断点继续，还不够就换回 4B。"
+        return "显存不够。关掉其他占显卡的程序后从断点继续。"
+    return text
+
+
+def _check_vram(cfg: dict, torch) -> None:
+    from novel_train.ollama_bin import unload_all
+
+    unload_all()
+    if not torch.cuda.is_available():
+        return
+    free, _total = torch.cuda.mem_get_info()
+    need = model_spec(model_key(cfg["model_name"]))["vram_gb"]
+    free_gb = free / 1024**3
+    print(f"可用显存 {free_gb:.1f} GB，{model_label(cfg['model_name'])} 约需 {need} GB", flush=True)
+    if free_gb < need:
+        print("可用显存少于需要的量，训练中可能爆显存。先关掉其他占显卡的程序。", flush=True)
+
+
+def _watch_load(output_dir: Path, stop: threading.Event, detail: str) -> None:
     while not stop.wait(2):
         progress = log_progress(output_dir, "load")
         if progress is None:
@@ -190,14 +219,15 @@ def _watch_load(output_dir: Path, stop: threading.Event) -> None:
         remaining = estimate_remaining(output_dir, "load", progress)
         if remaining is not None:
             extra["eta"] = remaining
-        set_stage(output_dir, "load", "running", progress, "正在把 Qwen3.5-4B 载入显存", **extra)
+        set_stage(output_dir, "load", "running", progress, detail, **extra)
 
 
 def _train_body(cfg: dict, train_path: Path, eval_path: Path, output_dir: Path, resume: str | None) -> None:
     import torch
 
+    _check_vram(cfg, torch)
     stop = threading.Event()
-    threading.Thread(target=_watch_load, args=(output_dir, stop), daemon=True).start()
+    threading.Thread(target=_watch_load, args=(output_dir, stop, _loading(cfg)), daemon=True).start()
     try:
         loaded = _prepare(cfg, train_path, eval_path, output_dir, resume, torch)
     finally:
@@ -265,7 +295,7 @@ def _prepare(cfg: dict, train_path: Path, eval_path: Path, output_dir: Path, res
         if len(eval_ds) == 0:
             eval_ds = None
     if len(train_ds) < before:
-        print(f"去掉 {before - len(train_ds)} 条超过 {seq} token 的样本，截断会切掉续写结尾。")
+        print(f"去掉 {before - len(train_ds)} 条超过 {seq} token 的样本，截断会切掉章末。")
     if len(train_ds) == 0:
         raise SystemExit(f"所有样本都超过 {seq} token。调大序列长度，或把前情切短。")
 

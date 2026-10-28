@@ -14,6 +14,7 @@ from pathlib import Path
 from novel_train.envload import ROOT, configure_stdio, load_project_env
 from novel_train.ollama_bin import forget_cache, model_ready, ollama_executable, think_model_name
 from novel_train.pipeline import end_current, estimate_remaining, log_progress, set_stage
+from novel_train.prompts import INSTRUCTIONS
 
 load_project_env()
 
@@ -90,8 +91,15 @@ def render_modelfile(filename: str, *, thinking: bool) -> str:
     return (
         f"FROM ./{filename}\n"
         f'TEMPLATE """{template}"""\n'
+        f'SYSTEM """{INSTRUCTIONS[0]}"""\n'
         "PARAMETER stop <|im_end|>\n"
         "PARAMETER temperature 0.8\n"
+        # min-p 随置信度收放候选，长文里比只用 top-p 少跑题，也少重复。
+        "PARAMETER min_p 0.05\n"
+        "PARAMETER top_p 0.95\n"
+        "PARAMETER top_k 64\n"
+        "PARAMETER repeat_penalty 1.05\n"
+        "PARAMETER repeat_last_n 256\n"
         f"PARAMETER num_ctx {_NUM_CTX}\n"
     )
 
@@ -325,6 +333,9 @@ def export(run_dir: Path, model: str) -> str:
     if not (adapter / "adapter_model.safetensors").exists():
         raise FileNotFoundError("这次运行还没有 LoRA。")
     route_github_downloads()
+    from novel_train.ollama_bin import unload_all
+
+    unload_all()
     from unsloth import FastLanguageModel
 
     stop = threading.Event()

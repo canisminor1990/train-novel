@@ -259,7 +259,7 @@ function ProjectTable({
                   <Text code ellipsis>
                     {project.ollama.model}
                   </Text>
-                  {project.ollama.ready ? <Tag color="success">可续写</Tag> : null}
+                  {project.ollama.ready ? <Tag color="success">可写作</Tag> : null}
                 </Flexbox>
                 <Text code ellipsis type="secondary">
                   {project.ollama.think_model}

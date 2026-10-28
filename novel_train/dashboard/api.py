@@ -12,12 +12,18 @@ from novel_train.ollama_bin import (
     remove_model,
     think_model_name,
 )
+from novel_train.models import MODELS, public_models
+from novel_train.premise import read_status as premise_status
 from novel_train.presets import public_presets
 from novel_train.projects import Project
+from novel_train.prompts import DEFAULT_LENGTH, INSTRUCTIONS, build_user_input
 
-CONTEXT_MIN = 20
-# 约 4.6 万 token，给 64K 上下文的正文模型留出续写的余量。
-CONTEXT_MAX = 60000
+PREMISE_MIN = 4
+PREMISE_MAX = 2000
+LENGTH_MIN = 300
+LENGTH_MAX = 8000
+# 约 2.3 万 token，加上最长 8000 字的正文，仍在 64K 上下文里。
+CONTEXT_MAX = 30000
 
 
 def _lock() -> dict | None:
@@ -55,6 +61,8 @@ def project_summary(project: Project, lock: dict | None) -> dict:
         "created": meta.get("created"),
         "updated": meta.get("updated"),
         "preset": meta.get("preset"),
+        "base_model": project.base_model,
+        "base_model_label": MODELS[project.base_model]["label"],
         "ready": ready,
         "ready_detail": reason,
         "books": len(stats.get("books") or []),
@@ -89,10 +97,43 @@ def project_detail(project: Project) -> dict:
         "raw_files": projects.raw_files(project),
         "samples": projects.sample_preview(project),
         "presets": public_presets(meta.get("preset"), summary["train_samples"]),
+        "models": public_models(project.base_model),
+        "premises": _premises(project, lock),
         "runs": [runs.summary(project, run_dir, active_run, meta.get("mounted_run")) for run_dir in runs.list_run_dirs(project)],
         "busy": jobs.busy_reason(lock) if lock else None,
         "active": lock,
     }
+
+
+def _premises(project: Project, lock: dict | None) -> dict:
+    stats = projects.dataset(project) or {}
+    status = premise_status(project.root) or {}
+    alive = bool(lock and lock.get("kind") == "premise" and lock.get("project") == project.id)
+    state = str(status.get("state") or "idle")
+    if state in {"queued", "running"} and not alive:
+        state = "queued" if state == "queued" and _recent(status) else "interrupted"
+    return {
+        "state": state,
+        "alive": alive,
+        "done": status.get("done"),
+        "total": status.get("total"),
+        "eta": status.get("eta") if alive else None,
+        "detail": status.get("detail") or "",
+        "passages": stats.get("passages") or 0,
+        "with_premise": stats.get("with_premise") or 0,
+    }
+
+
+def _recent(status: dict) -> bool:
+    import time
+
+    return time.time() - float(status.get("updated") or 0) < 20
+
+
+def set_model(project: Project, payload: dict) -> dict:
+    _require_idle(project, "换模型")
+    projects.set_base_model(project, str(payload.get("model") or ""))
+    return {"ok": True}
 
 
 def run_detail(project: Project, run_id: str) -> dict:
@@ -162,7 +203,7 @@ def update_project(project: Project, payload: dict) -> dict:
 def _require_idle(project: Project, action: str) -> None:
     lock = _lock()
     if lock and lock.get("project") == project.id:
-        raise jobs.Conflict(f"这个项目正在{'训练' if lock.get('kind') == 'train' else '导出'}。等它结束再{action}。")
+        raise jobs.Conflict(f"这个项目正在{jobs.KIND_LABELS.get(str(lock.get('kind')), '导出')}。等它结束再{action}。")
 
 
 def delete_project(project: Project, payload: dict) -> dict:
@@ -222,21 +263,31 @@ def delete_run(project: Project, run_id: str) -> dict:
     return {"ok": True}
 
 
-def continue_text(project: Project, payload: dict) -> dict:
-    body = str(payload.get("text") or "").strip()
-    if len(body) < CONTEXT_MIN:
-        raise ValueError(f"前情至少 {CONTEXT_MIN} 个字。")
-    if len(body) > CONTEXT_MAX:
+def write_text(project: Project, payload: dict) -> dict:
+    premise = str(payload.get("premise") or "").strip()
+    context = str(payload.get("context") or "").strip()
+    try:
+        length = int(payload.get("length") or DEFAULT_LENGTH)
+    except (TypeError, ValueError):
+        length = DEFAULT_LENGTH
+    if len(premise) < PREMISE_MIN:
+        raise ValueError(f"命题至少 {PREMISE_MIN} 个字。")
+    if len(premise) > PREMISE_MAX:
+        raise ValueError(f"命题最多 {PREMISE_MAX} 字。细节放进前情里。")
+    if len(context) > CONTEXT_MAX:
         raise ValueError(f"前情超过 {CONTEXT_MAX} 字。先截到最近的一段。")
+    if not LENGTH_MIN <= length <= LENGTH_MAX:
+        raise ValueError(f"字数在 {LENGTH_MIN} 到 {LENGTH_MAX} 之间。更长的分几章写。")
     reason = jobs.busy_reason()
     if reason:
-        raise jobs.Conflict(reason + "等它结束再续写，避免抢显存。")
+        raise jobs.Conflict(reason + "等它结束再写，避免抢显存。")
     model = project.ollama_model
     if ollama_executable() is None:
         raise ValueError("没有找到 ollama.exe。")
     if not model_ready(model):
         raise ValueError(f"{model} 还没挂上。训练结束会自动挂载，或在运行详情里点「继续」。")
-    return {"ok": True, "text": ollama_chat(model, body), "model": model}
+    user = build_user_input(premise, "", length, context)
+    return {"ok": True, "text": ollama_chat(model, INSTRUCTIONS[0], user, length), "model": model}
 
 
 def check_env() -> dict:

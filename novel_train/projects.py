@@ -12,6 +12,7 @@ from pathlib import Path
 
 from novel_train.envload import ROOT
 from novel_train.jsonio import read_json, write_json
+from novel_train.models import DEFAULT_MODEL, MODELS
 from novel_train.presets import DEFAULT_PRESET, PRESETS
 
 PROJECTS = ROOT / "projects"
@@ -83,6 +84,11 @@ class Project:
     @property
     def ollama_model(self) -> str:
         return str(self.meta().get("ollama_model") or f"novel-{self.id}")
+
+    @property
+    def base_model(self) -> str:
+        key = self.meta().get("base_model")
+        return key if key in MODELS else DEFAULT_MODEL
 
 
 def get(project_id: str) -> Project:
@@ -176,6 +182,7 @@ def create(name: str, project_id: str | None = None, ollama_model: str | None = 
             "created": now,
             "updated": now,
             "preset": DEFAULT_PRESET,
+            "base_model": DEFAULT_MODEL,
             "ollama_model": model,
             "mounted_run": None,
         },
@@ -195,6 +202,12 @@ def set_preset(project: Project, preset: str) -> dict:
     if preset not in PRESETS:
         raise ValueError("预设只能是试跑、标准或细读。")
     return project.update(preset=preset)
+
+
+def set_base_model(project: Project, key: str) -> dict:
+    if key not in MODELS:
+        raise ValueError("模型只能是 Qwen3.5-4B 或 Qwen3.5-9B。")
+    return project.update(base_model=key)
 
 
 def delete(project: Project) -> None:
@@ -306,8 +319,9 @@ def sample_preview(project: Project, limit: int = 3) -> list[dict]:
                 {
                     "book": row.get("book", ""),
                     "chapter": row.get("chapter", ""),
-                    "input": str(row.get("input", ""))[-600:],
+                    "input": str(row.get("input", ""))[:900],
                     "output": str(row.get("output", ""))[:600],
+                    "output_chars": len(str(row.get("output", ""))),
                 }
             )
             if len(rows) >= limit:

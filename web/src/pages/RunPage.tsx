@@ -233,6 +233,7 @@ export function RunPage({
 
   const failedStage = run.stages.find((stage) => stage.state === 'failed');
   const description = [
+    run.model_label,
     `${run.preset_label}预设`,
     run.dataset
       ? `${run.dataset.books.length} 本 · ${formatCount(run.dataset.train_samples)} 条训练样本 · ${formatCount(run.dataset.eval_samples)} 条验证`
@@ -348,16 +349,16 @@ export function RunPage({
       </Surface>
       {preview && preview.model ? (
         <Surface
-          description="训练结束时，拿一段验证集的前情让模型续写，和原文放在一起看。"
-          title="续写对照"
+          description="训练结束时，拿验证集里一段的命题让模型写，和原文放在一起看。主要看长度够不够、文风像不像。"
+          title="写作对照"
         >
           <div className={styles.compare}>
             <div>
-              <div className={styles.caption}>模型续写</div>
+              <div className={styles.caption}>模型写的 · {preview.model.length} 字</div>
               <pre className={styles.prose}>{preview.model}</pre>
             </div>
             <div>
-              <div className={styles.caption}>原文</div>
+              <div className={styles.caption}>原文 · {preview.original.length} 字</div>
               <pre className={styles.prose}>{preview.original}</pre>
             </div>
           </div>
