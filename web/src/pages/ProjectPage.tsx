@@ -143,9 +143,13 @@ export function ProjectPage({
         <DeleteProjectModal
           project={project}
           onClose={() => setDialog(null)}
-          onDeleted={() => {
-            onProjectsChange();
-            go(href.home());
+          onDeleted={(removed) => {
+            if (removed) {
+              onProjectsChange();
+              go(href.home());
+              return;
+            }
+            refresh();
           }}
         />
       ) : null}

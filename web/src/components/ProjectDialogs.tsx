@@ -85,17 +85,26 @@ export function DeleteProjectModal({
 }: {
   project: ProjectSummary;
   onClose: () => void;
-  onDeleted: () => void;
+  onDeleted: (removed: boolean) => void;
 }) {
-  const [removeModel, setRemoveModel] = useState(project.ollama.ready || project.ollama.think_ready);
   const [deleting, setDeleting] = useState(false);
+  const [removeFiles, setRemoveFiles] = useState(true);
+  const [removeModels, setRemoveModels] = useState(true);
+  const mounted = project.ollama.ready || project.ollama.think_ready;
+  const models = project.ollama.think_ready
+    ? `${project.ollama.model} 和 ${project.ollama.think_model}`
+    : project.ollama.model;
 
   async function submit() {
     setDeleting(true);
     try {
-      const result = await api.deleteProject(project.id, removeModel);
-      toast.success(result.note ? `项目已删除。${result.note}` : '项目已删除');
-      onDeleted();
+      const result = await api.deleteProject(project.id, {
+        files: removeFiles,
+        models: mounted && removeModels,
+      });
+      if (result.deleted) toast.success(result.note ? `项目已删除。${result.note}` : '项目已删除');
+      else toast.success(result.note ?? '已从 Ollama 删除');
+      onDeleted(result.deleted);
       onClose();
     } catch (exc) {
       toast.error(exc instanceof Error ? exc.message : '删除失败');
@@ -109,25 +118,24 @@ export function DeleteProjectModal({
       open
       cancelText="取消"
       confirmLoading={deleting}
-      okButtonProps={{ danger: true }}
+      okButtonProps={{ danger: true, disabled: !removeFiles && !(mounted && removeModels) }}
       okText="删除项目"
       title={`删除「${project.name}」？`}
       onCancel={onClose}
       onOk={() => void submit()}
     >
       <Flexbox gap={16}>
-        <Text>
-          会删掉这个项目里的 {project.books} 本原文、切好的样本，以及 {project.run_count} 次运行的
-          LoRA、断点和 GGUF，不能恢复。
-        </Text>
-        {project.ollama.ready || project.ollama.think_ready ? (
-          <Checkbox checked={removeModel} onChange={setRemoveModel}>
-            同时从 Ollama 删除 {project.ollama.model}
-            {project.ollama.think_ready ? ` 和 ${project.ollama.think_model}` : ''}
+        <Checkbox checked={removeFiles} onChange={setRemoveFiles}>
+          {`删除项目目录：${project.books} 本原文、切好的样本，以及 ${project.run_count} 次运行的 LoRA、断点和 GGUF`}
+        </Checkbox>
+        {mounted ? (
+          <Checkbox checked={removeModels} onChange={setRemoveModels}>
+            {`从 Ollama 删除 ${models}`}
           </Checkbox>
         ) : (
           <Text type="secondary">Ollama 里还没有 {project.ollama.model}，不用另外清理。</Text>
         )}
+        <Text type="secondary">勾选的内容不能恢复。</Text>
       </Flexbox>
     </Modal>
   );

@@ -16,7 +16,8 @@ from novel_train.presets import public_presets
 from novel_train.projects import Project
 
 CONTEXT_MIN = 20
-CONTEXT_MAX = 4000
+# 约 4.6 万 token，给 64K 上下文的正文模型留出续写的余量。
+CONTEXT_MAX = 60000
 
 
 def _lock() -> dict | None:
@@ -166,9 +167,13 @@ def _require_idle(project: Project, action: str) -> None:
 
 def delete_project(project: Project, payload: dict) -> dict:
     _require_idle(project, "删除")
-    model = project.ollama_model
+    remove_files = bool(payload.get("remove_files", True))
+    remove_models = bool(payload.get("remove_models", True))
+    if not remove_files and not remove_models:
+        raise ValueError("至少选择一项。")
     note = None
-    if payload.get("remove_model"):
+    if remove_models:
+        model = project.ollama_model
         present = [name for name in (model, think_model_name(model)) if model_ready(name)]
         removed: list[str] = []
         failed: list[str] = []
@@ -182,9 +187,10 @@ def delete_project(project: Project, payload: dict) -> dict:
             note = f"已从 Ollama 删除 {'、'.join(removed)}。"
         if failed:
             missed = f"Ollama 里的 {'、'.join(failed)} 没删掉。"
-            note = f"{note}{missed}" if note else f"项目已删除，但{missed}"
-    projects.delete(project)
-    return {"ok": True, "note": note}
+            note = f"{note}{missed}" if note else missed
+    if remove_files:
+        projects.delete(project)
+    return {"ok": True, "deleted": remove_files, "note": note}
 
 
 def import_books(project: Project, files: list[tuple[str, bytes]]) -> dict:

@@ -323,7 +323,7 @@ function ProjectTable({
         <DeleteProjectModal
           project={dialog.project}
           onClose={() => setDialog(null)}
-          onDeleted={onChange}
+          onDeleted={() => onChange()}
         />
       ) : null}
     </>

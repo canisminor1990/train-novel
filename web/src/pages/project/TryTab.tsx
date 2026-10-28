@@ -19,7 +19,7 @@ import { runName } from '../../format';
 import { go, href } from '../../router';
 
 const MIN = 20;
-const MAX = 4000;
+const MAX = 60_000;
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   prose: css`

@@ -253,9 +253,10 @@ export const api = {
       `/api/projects/${id}/settings`,
       fields,
     ),
-  deleteProject: (id: string, removeModel: boolean) =>
-    postJson<{ ok: boolean; note: string | null }>(`/api/projects/${id}/delete`, {
-      remove_model: removeModel,
+  deleteProject: (id: string, options: { files: boolean; models: boolean }) =>
+    postJson<{ ok: boolean; deleted: boolean; note: string | null }>(`/api/projects/${id}/delete`, {
+      remove_files: options.files,
+      remove_models: options.models,
     }),
   setPreset: (id: string, preset: string) => postJson(`/api/projects/${id}/preset`, { preset }),
   removeBook: (id: string, name: string) =>

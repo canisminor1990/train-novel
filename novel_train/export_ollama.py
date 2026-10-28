@@ -61,19 +61,29 @@ def route_github_downloads() -> None:
 
 # Qwen3.5 看到空的思考段就会接着写正文。不写这段时，它会先抛出思考。
 _THINK_OFF = "<think>\n\n</think>\n\n"
+# 64K 在 Ollama 里约占 5GB 显存。模型用完会在显存里停留 5 分钟，再往上开会和随后开始的训练抢显存。
+# -think 版沿用基座的思考，常写几千 token，所以同样需要这个长度。
+_NUM_CTX = 65536
 
 
 def render_modelfile(filename: str, *, thinking: bool) -> str:
-    assistant = "<|im_start|>assistant\n"
-    if not thinking:
-        assistant += _THINK_OFF
+    if thinking:
+        past_thinking = "{{ if .Thinking }}<think>\n{{ .Thinking }}\n</think>\n\n{{ end }}"
+        assistant = (
+            "<|im_start|>assistant\n"
+            "{{ if and $.IsThinkSet (not $.Think) }}" + _THINK_OFF + "{{ else }}<think>\n{{ end }}"
+        )
+    else:
+        past_thinking = ""
+        assistant = "<|im_start|>assistant\n" + _THINK_OFF
     template = (
         "{{ if .System }}<|im_start|>system\n"
         "{{ .System }}<|im_end|>\n"
         "{{ end }}{{ range .Messages }}{{ if eq .Role \"user\" }}<|im_start|>user\n"
         "{{ .Content }}<|im_end|>\n"
         "{{ else if eq .Role \"assistant\" }}<|im_start|>assistant\n"
-        "{{ .Content }}<|im_end|>\n"
+        + past_thinking
+        + "{{ .Content }}<|im_end|>\n"
         "{{ end }}{{ end }}"
         + assistant
     )
@@ -82,8 +92,46 @@ def render_modelfile(filename: str, *, thinking: bool) -> str:
         f'TEMPLATE """{template}"""\n'
         "PARAMETER stop <|im_end|>\n"
         "PARAMETER temperature 0.8\n"
-        "PARAMETER num_ctx 4096\n"
+        f"PARAMETER num_ctx {_NUM_CTX}\n"
     )
+
+
+def _gguf_py() -> Path:
+    import os
+
+    return Path(os.environ.get("UNSLOTH_LLAMA_CPP_PATH") or ROOT / ".cache" / "llama.cpp") / "gguf-py"
+
+
+def drop_chat_template(gguf: Path) -> None:
+    """Remove the GGUF's embedded Jinja template so Ollama runs the Modelfile TEMPLATE.
+
+    Ollama prefers the embedded Qwen3.5 template because it declares tools and thinking.
+    That template thinks unless the request sends think=false, which bypasses the prose template.
+    """
+    import os
+
+    package = _gguf_py()
+    env = {**os.environ, "PYTHONPATH": str(package)}
+    probe = (
+        "import sys; from gguf import GGUFReader; "
+        "sys.exit(0 if 'tokenizer.chat_template' in GGUFReader(sys.argv[1]).fields else 3)"
+    )
+    found = subprocess.run([sys.executable, "-c", probe, str(gguf)], env=env, capture_output=True, text=True)
+    if found.returncode == 3:
+        return
+    if found.returncode != 0:
+        raise RuntimeError(f"读不了 {gguf.name} 的元数据，退出代码 {found.returncode}：{found.stderr.strip()[-300:]}")
+    partial = gguf.with_name(gguf.name + ".part")
+    script = package / "gguf" / "scripts" / "gguf_new_metadata.py"
+    try:
+        subprocess.run(
+            [sys.executable, str(script), "--remove-metadata", "tokenizer.chat_template", "--force", str(gguf), str(partial)],
+            env=env,
+            check=True,
+        )
+        partial.replace(gguf)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def build_dir(run_dir: Path) -> Path:
@@ -175,6 +223,9 @@ def mount(run_dir: Path, model: str, force: bool = False) -> str | None:
     ]
     if pending and ollama_executable() is None:
         raise RuntimeError(f"GGUF 已写到 {directory}。没有找到 ollama.exe，装好 Ollama 后点「挂到 Ollama」。")
+    if pending:
+        set_stage(run_dir, "ollama", "running", None, "正在去掉 GGUF 里自带的对话模板")
+        drop_chat_template(found[0])
     for name, thinking in pending:
         modelfile = write_modelfile(directory, found[0], thinking=thinking)
         register(run_dir, directory, name, modelfile)

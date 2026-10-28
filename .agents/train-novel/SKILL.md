@@ -24,7 +24,7 @@ projects/<项目>/runs/r-时间/         一次运行：run.json、config.json�
 projects/.active.json               显卡锁。同一时间只跑一个训练或导出
 ```
 
-每个项目一次导出挂两个 Ollama 模型：`novel-<项目>` 的模板预先闭合思考，续写只出正文；`novel-<项目>-think` 保留思考。从旧目录 `data/raw` 和 `outputs/sft` 迁移来的项目叫 `legacy-sft`，模型名保留 `novel-sft`，思考版是 `novel-sft-think`。
+每个项目一次导出挂两个 Ollama 模型：`novel-<项目>` 的模板预先闭合思考，续写只出正文；`novel-<项目>-think` 保留思考。两个模型的上下文都是 65536（约 5GB 显存），看板前情上限 6 万字。挂载前会删掉 GGUF 里的 `tokenizer.chat_template`：Ollama 发现内嵌的 Qwen3.5 模板声明了工具和思考，就会忽略 Modelfile 的 `TEMPLATE`，而那份模板默认开思考。从旧目录 `data/raw` 和 `outputs/sft` 迁移来的项目叫 `legacy-sft`，模型名保留 `novel-sft`，思考版是 `novel-sft-think`。
 
 ## 数据
 
