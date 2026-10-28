@@ -25,7 +25,7 @@ from novel_train.guards import reject_sample_only
 from novel_train.metrics import attach_jsonl_callback
 from novel_train.pipeline import end_current, estimate_remaining, log_progress, set_stage
 from novel_train.prompts import render_chat, to_messages
-from novel_train.speak import continue_prose
+from novel_train.speak import continue_prose, text_tokenizer
 
 TARGET_MODULES = [
     "q_proj",
@@ -252,9 +252,11 @@ def _prepare(cfg: dict, train_path: Path, eval_path: Path, output_dir: Path, res
             eval_ds = None
 
     seq = int(cfg["max_seq_length"])
+    text_tok = text_tokenizer(tokenizer)
 
     def fits(rows):
-        return [len(ids) <= seq for ids in tokenizer(rows["text"], add_special_tokens=False)["input_ids"]]
+        encoded = text_tok(rows["text"], add_special_tokens=False)
+        return [len(ids) <= seq for ids in encoded["input_ids"]]
 
     before = len(train_ds)
     train_ds = train_ds.filter(fits, batched=True)
