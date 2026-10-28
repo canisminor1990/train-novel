@@ -1,0 +1,19 @@
+{
+  "name": "train-novel",
+  "private": true,
+  "description": "RTX 4090 上用 Unsloth 对 Qwen3.5-4B 做 bf16 LoRA，学自己长篇的文风",
+  "scripts": {
+    "start": "powershell -NoProfile -ExecutionPolicy Bypass -File start.ps1",
+    "env:setup": "powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1",
+    "env:check": ".venv\\Scripts\\python.exe -m novel_train.check",
+    "dashboard": ".venv\\Scripts\\python.exe -m novel_train.dashboard",
+    "data": ".venv\\Scripts\\python.exe -m novel_train.prepare",
+    "data:check": ".venv\\Scripts\\python.exe -m novel_train.prepare --self-check",
+    "write": ".venv\\Scripts\\python.exe -m novel_train.infer",
+    "web:install": "pnpm -C web install",
+    "web:dev": "pnpm -C web dev",
+    "build": "pnpm -C web build",
+    "lint": "pnpm -C web lint && pnpm data:check"
+  },
+  "packageManager": "pnpm@11.21.0"
+}

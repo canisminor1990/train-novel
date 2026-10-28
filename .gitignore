@@ -1,0 +1,45 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+web/dist/
+*.tsbuildinfo
+
+# 本地密钥；示例配置可以提交
+.env
+.env.*
+!.env.example
+
+# 训练产物、用户原文和切好的样本
+outputs/
+projects/
+data/processed/
+data/raw/*
+!data/raw/示例*
+
+# 模型权重和本地缓存
+*.gguf
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+.cache/
+unsloth_compiled_cache/
+torchinductor_*/
+wandb/
+*.log
+
+# 系统和编辑器
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp

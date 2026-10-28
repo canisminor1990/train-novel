@@ -1,0 +1,3 @@
+# 先装 CUDA 版 PyTorch，再装 Unsloth。直接 pip install -r 可能装到 CPU 版 torch。
+# 用项目根目录的 setup.ps1。
+unsloth
