@@ -67,6 +67,35 @@ _THINK_OFF = "<think>\n\n</think>\n\n"
 _NUM_CTX = 65536
 
 
+# 跟 Ollama 的 qwen3.5 渲染器同一套 XML。解析用 qwen3-coder：它只认 <tool_call>，
+# 不会把思考默认打开。qwen3.5 解析器在请求没带 think=false 时会把工具调用吞进思考。
+_TOOL_SPEC = (
+    "# Tools\n\nYou have access to the following functions:\n\n<tools>\n"
+    "{{ range .Tools }}{{ . | json }}\n{{ end }}"
+    "</tools>\n\n"
+    "If you choose to call a function ONLY reply in the following format with NO suffix:\n\n"
+    "<tool_call>\n<function=example_function_name>\n"
+    "<parameter=example_parameter_1>\nvalue_1\n</parameter>\n"
+    "<parameter=example_parameter_2>\n"
+    "This is the value for the second parameter\nthat can span\nmultiple lines\n"
+    "</parameter>\n</function>\n</tool_call>\n\n"
+    "<IMPORTANT>\nReminder:\n"
+    "- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n"
+    "- Required parameters MUST be specified\n"
+    "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n"
+    "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n"
+    "</IMPORTANT>"
+)
+_TOOL_CALLS = (
+    "{{ if .ToolCalls }}{{ range .ToolCalls }}"
+    "<tool_call>\n<function={{ .Function.Name }}>\n"
+    "{{ range $key, $value := .Function.Arguments }}"
+    "<parameter={{ $key }}>\n{{ $value }}\n</parameter>\n"
+    "{{ end }}</function>\n</tool_call>\n"
+    "{{ end }}{{ end }}"
+)
+
+
 def render_modelfile(filename: str, *, thinking: bool) -> str:
     if thinking:
         past_thinking = "{{ if .Thinking }}<think>\n{{ .Thinking }}\n</think>\n\n{{ end }}"
@@ -78,19 +107,28 @@ def render_modelfile(filename: str, *, thinking: bool) -> str:
         past_thinking = ""
         assistant = "<|im_start|>assistant\n" + _THINK_OFF
     template = (
-        "{{ if .System }}<|im_start|>system\n"
+        "{{ if .Tools }}<|im_start|>system\n"
+        + _TOOL_SPEC
+        + "{{ if .System }}\n\n{{ .System }}{{ end }}<|im_end|>\n"
+        "{{ else if .System }}<|im_start|>system\n"
         "{{ .System }}<|im_end|>\n"
         "{{ end }}{{ range .Messages }}{{ if eq .Role \"user\" }}<|im_start|>user\n"
         "{{ .Content }}<|im_end|>\n"
         "{{ else if eq .Role \"assistant\" }}<|im_start|>assistant\n"
         + past_thinking
-        + "{{ .Content }}<|im_end|>\n"
+        + "{{ .Content }}"
+        + _TOOL_CALLS
+        + "<|im_end|>\n"
+        "{{ else if eq .Role \"tool\" }}<|im_start|>user\n"
+        "<tool_response>\n{{ .Content }}\n</tool_response><|im_end|>\n"
         "{{ end }}{{ end }}"
         + assistant
     )
     return (
         f"FROM ./{filename}\n"
         f'TEMPLATE """{template}"""\n'
+        # 能力位看模板里有没有 .Tools。真正拆 <tool_call> 靠这个解析器。
+        "PARSER qwen3-coder\n"
         f'SYSTEM """{INSTRUCTIONS[0]}"""\n'
         "PARAMETER stop <|im_end|>\n"
         "PARAMETER temperature 0.8\n"

@@ -15,19 +15,12 @@ from unsloth import FastLanguageModel
 from datasets import Dataset
 from trl import SFTConfig, SFTTrainer
 
-from novel_train.compat import call_accepting
 from novel_train.guards import reject_sample_only
 from novel_train.metrics import attach_jsonl_callback, write_status
+from novel_train.speak import text_tokenizer
+from novel_train.train_sft import OWN_KEYS, sft_overrides
 
-TARGET_MODULES = [
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj",
-]
+CPT_KEYS = OWN_KEYS | {"books_file"}
 
 
 def resolve(path: str) -> Path:
@@ -60,23 +53,6 @@ def chunk_book(text: str, tokenizer, max_seq_length: int) -> list[str]:
     return chunks
 
 
-def make_trainer(model, tokenizer, train_ds, eval_ds, args):
-    common = {
-        "model": model,
-        "args": args,
-        "train_dataset": train_ds,
-        "eval_dataset": eval_ds,
-    }
-    last_error: TypeError | None = None
-    for extra in ({"processing_class": tokenizer}, {"tokenizer": tokenizer}):
-        try:
-            return SFTTrainer(**common, **extra)
-        except TypeError as exc:
-            last_error = exc
-    assert last_error is not None
-    raise last_error
-
-
 def train(config_path: str, resume: str | None) -> None:
     import torch
 
@@ -91,6 +67,7 @@ def train(config_path: str, resume: str | None) -> None:
     if not books:
         raise SystemExit("books.jsonl 是空的。")
     reject_sample_only(books_path)
+    overrides = sft_overrides(cfg, CPT_KEYS)
     (output_dir / "train_config.json").write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -109,21 +86,26 @@ def train(config_path: str, resume: str | None) -> None:
     model = FastLanguageModel.get_peft_model(
         model,
         r=cfg["lora_rank"],
-        target_modules=TARGET_MODULES,
+        target_modules=cfg.get("lora_target_modules"),
+        finetune_vision_layers=False,
+        finetune_language_layers=True,
+        finetune_attention_modules=True,
+        finetune_mlp_modules=True,
         lora_alpha=cfg["lora_alpha"],
         lora_dropout=cfg["lora_dropout"],
         bias="none",
         use_gradient_checkpointing="unsloth",
         random_state=cfg["seed"],
-        max_seq_length=cfg["max_seq_length"],
-        use_rslora=False,
+        use_rslora=cfg.get("use_rslora", False),
         loftq_config=None,
     )
+    model.print_trainable_parameters()
+    text_tok = text_tokenizer(tokenizer)
 
     train_texts: list[str] = []
     eval_texts: list[str] = []
     for book in books:
-        chunks = chunk_book(book["text"], tokenizer, cfg["max_seq_length"])
+        chunks = chunk_book(book["text"], text_tok, cfg["max_seq_length"])
         if len(chunks) >= 8:
             train_texts.extend(chunks[:-1])
             eval_texts.append(chunks[-1])
@@ -137,40 +119,25 @@ def train(config_path: str, resume: str | None) -> None:
     eval_ds = Dataset.from_list([{"text": text} for text in eval_texts]) if eval_texts else None
     print(f"CPT 训练片段 {len(train_texts)}  验证片段 {len(eval_texts)}")
 
-    trainer = make_trainer(
-        model,
-        tokenizer,
-        train_ds,
-        eval_ds,
-        call_accepting(
-            SFTConfig,
-            dict(
-                output_dir=str(output_dir),
-                dataset_text_field="text",
-                max_seq_length=cfg["max_seq_length"],
-                max_length=cfg["max_seq_length"],
-                packing=False,
-                dataset_num_proc=1,
-                per_device_train_batch_size=cfg["per_device_train_batch_size"],
-                per_device_eval_batch_size=1,
-                gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
-                num_train_epochs=cfg["num_train_epochs"],
-                learning_rate=cfg["learning_rate"],
-                warmup_ratio=cfg["warmup_ratio"],
-                lr_scheduler_type=cfg["lr_scheduler_type"],
-                weight_decay=cfg["weight_decay"],
-                logging_steps=cfg["logging_steps"],
-                eval_strategy="epoch" if eval_ds is not None else "no",
-                save_strategy="epoch",
-                save_total_limit=cfg["save_total_limit"],
-                bf16=use_bf16,
-                fp16=not use_bf16,
-                optim="adamw_8bit",
-                seed=cfg["seed"],
-                report_to="none",
-                dataloader_num_workers=0,
-            ),
-        ),
+    args = SFTConfig(
+        **{
+            **overrides,
+            "output_dir": str(output_dir),
+            "dataset_text_field": "text",
+            "max_length": cfg["max_seq_length"],
+            "packing": False,
+            "eval_strategy": "epoch" if eval_ds is not None else "no",
+            "save_strategy": "epoch",
+            "bf16": use_bf16,
+            "fp16": not use_bf16,
+        }
+    )
+    trainer = SFTTrainer(
+        model=model,
+        args=args,
+        train_dataset=train_ds,
+        eval_dataset=eval_ds,
+        processing_class=tokenizer,
     )
     attach_jsonl_callback(trainer, output_dir / "metrics.jsonl")
     try:

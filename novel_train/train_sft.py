@@ -1,8 +1,9 @@
-"""Style SFT with Unsloth bf16 LoRA. Import this module only after the venv is installed."""
+"""Style SFT with Unsloth bf16 LoRA. Import this module only inside the pixi environment."""
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 import sys
@@ -15,29 +16,42 @@ from novel_train.envload import ROOT, configure_stdio, load_project_env
 load_project_env()
 
 from unsloth import FastLanguageModel
-from unsloth.chat_templates import train_on_responses_only
 from datasets import load_dataset
-from transformers import DataCollatorForSeq2Seq
 from trl import SFTConfig, SFTTrainer
 
-from novel_train.compat import call_accepting
 from novel_train.guards import reject_sample_only
 from novel_train.metrics import attach_jsonl_callback
 from novel_train.models import MODELS, model_key, model_label, model_spec
 from novel_train.ollama_bin import tokens_for
 from novel_train.pipeline import end_current, estimate_remaining, log_progress, set_stage
-from novel_train.prompts import render_chat, to_messages
+from novel_train.prompts import to_messages
 from novel_train.speak import continue_prose, text_tokenizer
 
-TARGET_MODULES = [
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj",
-]
+# 配置里除了这些，其余字段原样交给 SFTConfig。导入 Unsloth 后 SFTConfig 会吞掉不认识的参数，
+# 所以要先按 dataclass 字段核对。
+OWN_KEYS = {
+    "model_name",
+    "max_seq_length",
+    "load_in_4bit",
+    "load_in_16bit",
+    "lora_rank",
+    "lora_alpha",
+    "lora_dropout",
+    "lora_target_modules",
+    "use_rslora",
+    "train_file",
+    "eval_file",
+    "early_stopping_patience",
+}
+SFT_DEFAULTS = {
+    "optim": "adamw_8bit",
+    "max_grad_norm": 1.0,
+    "per_device_eval_batch_size": 1,
+    "dataset_num_proc": 1,
+    "dataloader_num_workers": 0,
+    "report_to": "none",
+}
+NO_THINKING = {"enable_thinking": False}
 
 
 def resolve(path: str) -> Path:
@@ -51,12 +65,32 @@ def load_config(path: str) -> dict:
     return json.loads(resolve(path).read_text(encoding="utf-8"))
 
 
-def make_text(tokenizer, rows: dict) -> dict:
-    texts = []
-    for instruction, user, output in zip(rows["instruction"], rows["input"], rows["output"]):
-        messages = to_messages(instruction, user, output)
-        texts.append(render_chat(tokenizer, messages, add_generation_prompt=False))
-    return {"text": texts}
+def sft_overrides(cfg: dict, own: set[str] = OWN_KEYS) -> dict:
+    known = {field.name for field in dataclasses.fields(SFTConfig)}
+    passthrough = {key: value for key, value in cfg.items() if key not in own}
+    # 旧运行冻结的配置里是 transformers 5 删掉的 warmup_ratio。
+    if "warmup_ratio" in passthrough:
+        passthrough.setdefault("warmup_steps", passthrough.pop("warmup_ratio"))
+    unknown = sorted(set(passthrough) - known)
+    if unknown:
+        raise SystemExit("配置里有 SFTConfig 不认识的字段：" + "、".join(unknown))
+    if (passthrough.get("max_steps") or 0) <= 0:
+        passthrough["max_steps"] = -1
+    return {**SFT_DEFAULTS, **passthrough}
+
+
+def to_prompt_completion(row: dict) -> dict:
+    messages = to_messages(row["instruction"], row["input"], row["output"])
+    return {"prompt": messages[:-1], "completion": messages[-1:], "chat_template_kwargs": NO_THINKING}
+
+
+def load_split(path: Path):
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    ds = load_dataset("json", data_files=str(path), split="train")
+    if len(ds) == 0:
+        return None
+    return ds.map(to_prompt_completion, remove_columns=ds.column_names)
 
 
 def _stage_callback(output_dir: Path):
@@ -89,46 +123,22 @@ def checkpoint_interval(total_steps: int) -> int:
     return max(10, math.ceil(total_steps / 8))
 
 
-def make_trainer(model, tokenizer, train_ds, eval_ds, collator, args):
-    common = {
-        "model": model,
-        "args": args,
-        "train_dataset": train_ds,
-        "eval_dataset": eval_ds,
-        "data_collator": collator,
-    }
-    attempts = [
-        {**common, "processing_class": tokenizer},
-        {**common, "tokenizer": tokenizer},
-    ]
-    last_error: TypeError | None = None
-    for kwargs in attempts:
-        try:
-            return SFTTrainer(**kwargs)
-        except TypeError as exc:
-            last_error = exc
-    assert last_error is not None
-    raise last_error
-
-
 def check_response_mask(trainer) -> None:
     row = trainer.train_dataset[0]
-    labels = row.get("labels") if isinstance(row, dict) else None
-    if labels is None:
-        print("掩码检查：数据集里还没有 labels，训练时由 collator 处理。")
-        return
-    if hasattr(labels, "tolist"):
-        labels = labels.tolist()
-    kept = sum(1 for token in labels if token != -100)
-    masked = sum(1 for token in labels if token == -100)
+    if "labels" in row:
+        keep = [token != -100 for token in row["labels"]]
+    elif "completion_mask" in row:
+        keep = [bool(flag) for flag in row["completion_mask"]]
+    else:
+        raise SystemExit("训练集里既没有 labels 也没有 completion_mask，回答掩码没有生效。")
+    kept = sum(keep)
+    masked = len(keep) - kept
     print(f"掩码检查：保留回答 token {kept}，掩掉前文 token {masked}")
     if kept < 8:
         raise SystemExit("回答掩码几乎没留下 token。先不要开训，检查对话模板是否匹配。")
 
 
 def write_preview(model, tokenizer, example: dict, output_dir: Path, max_seq_length: int) -> None:
-    import torch
-
     FastLanguageModel.for_inference(model)
     text = continue_prose(
         model,
@@ -167,6 +177,7 @@ def train(config_path: str, resume: str | None) -> None:
     if cfg.get("load_in_4bit") or not cfg.get("load_in_16bit", True):
         raise SystemExit("Qwen3.5 使用 bf16 LoRA。")
     reject_sample_only(train_path)
+    sft_overrides(cfg)
 
     (output_dir / "train_config.json").write_text(
         json.dumps(cfg, ensure_ascii=False, indent=2),
@@ -248,50 +259,52 @@ def _prepare(cfg: dict, train_path: Path, eval_path: Path, output_dir: Path, res
         load_in_16bit=cfg.get("load_in_16bit", True),
         dtype=None,
     )
+    # Qwen3.5 的 32 层里有 24 层是线性注意力（in_proj_qkv、in_proj_z、out_proj），
+    # 不写 target_modules 时由 Unsloth 选出语言部分的全部线性层，并跳过视觉塔。
     model = FastLanguageModel.get_peft_model(
         model,
         r=cfg["lora_rank"],
-        target_modules=TARGET_MODULES,
+        target_modules=cfg.get("lora_target_modules"),
+        finetune_vision_layers=False,
+        finetune_language_layers=True,
+        finetune_attention_modules=True,
+        finetune_mlp_modules=True,
         lora_alpha=cfg["lora_alpha"],
         lora_dropout=cfg["lora_dropout"],
         bias="none",
         use_gradient_checkpointing="unsloth",
         random_state=cfg["seed"],
-        max_seq_length=cfg["max_seq_length"],
-        use_rslora=False,
+        use_rslora=cfg.get("use_rslora", False),
         loftq_config=None,
     )
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    model.print_trainable_parameters()
+    text_tok = text_tokenizer(tokenizer)
+    if text_tok.pad_token is None:
+        text_tok.pad_token = text_tok.eos_token
 
     raw_preview = json.loads(train_path.read_text(encoding="utf-8").splitlines()[0])
     if eval_path.exists() and eval_path.stat().st_size > 0:
         raw_preview = json.loads(eval_path.read_text(encoding="utf-8").splitlines()[0])
-    train_ds = load_dataset("json", data_files=str(train_path), split="train")
-    train_ds = train_ds.map(lambda rows: make_text(tokenizer, rows), batched=True, remove_columns=train_ds.column_names)
-    eval_ds = None
-    if eval_path.exists() and eval_path.stat().st_size > 0:
-        eval_ds = load_dataset("json", data_files=str(eval_path), split="train")
-        if len(eval_ds) > 0:
-            eval_ds = eval_ds.map(
-                lambda rows: make_text(tokenizer, rows),
-                batched=True,
-                remove_columns=eval_ds.column_names,
-            )
-        else:
-            eval_ds = None
+    train_ds = load_split(train_path)
+    if train_ds is None:
+        raise SystemExit(f"训练集 {train_path} 是空的。")
+    eval_ds = load_split(eval_path)
 
     seq = int(cfg["max_seq_length"])
-    text_tok = text_tokenizer(tokenizer)
 
-    def fits(rows):
-        encoded = text_tok(rows["text"], add_special_tokens=False)
-        return [len(ids) <= seq for ids in encoded["input_ids"]]
+    def fits(row):
+        encoded = text_tok.apply_chat_template(
+            row["prompt"] + row["completion"],
+            tokenize=True,
+            return_dict=True,
+            **row["chat_template_kwargs"],
+        )
+        return len(encoded["input_ids"]) <= seq
 
     before = len(train_ds)
-    train_ds = train_ds.filter(fits, batched=True)
+    train_ds = train_ds.filter(fits)
     if eval_ds is not None:
-        eval_ds = eval_ds.filter(fits, batched=True)
+        eval_ds = eval_ds.filter(fits)
         if len(eval_ds) == 0:
             eval_ds = None
     if len(train_ds) < before:
@@ -299,62 +312,42 @@ def _prepare(cfg: dict, train_path: Path, eval_path: Path, output_dir: Path, res
     if len(train_ds) == 0:
         raise SystemExit(f"所有样本都超过 {seq} token。调大序列长度，或把前情切短。")
 
+    overrides = sft_overrides(cfg)
     has_eval = eval_ds is not None
-    accumulation = max(1, int(cfg["gradient_accumulation_steps"]))
-    max_steps = int(cfg.get("max_steps") or 0)
-    total_steps = math.ceil(len(train_ds) / accumulation) * int(cfg["num_train_epochs"])
-    if max_steps > 0:
-        total_steps = min(total_steps, max_steps)
+    accumulation = max(1, int(overrides.get("gradient_accumulation_steps", 1)))
+    batch = max(1, int(overrides.get("per_device_train_batch_size", 1)))
+    total_steps = math.ceil(len(train_ds) / (batch * accumulation)) * math.ceil(overrides.get("num_train_epochs", 1))
+    if overrides["max_steps"] > 0:
+        total_steps = min(total_steps, overrides["max_steps"])
     interval = checkpoint_interval(total_steps)
     patience = int(cfg.get("early_stopping_patience") or 0) if has_eval else 0
     print(f"约 {total_steps} 步，每 {interval} 步存断点{'并验证' if has_eval else ''}")
-    trainer = make_trainer(
-        model,
-        tokenizer,
-        train_ds,
-        eval_ds,
-        DataCollatorForSeq2Seq(tokenizer=tokenizer, padding=True),
-        call_accepting(
-            SFTConfig,
-            dict(
-                output_dir=str(output_dir),
-                dataset_text_field="text",
-                max_seq_length=cfg["max_seq_length"],
-                max_length=cfg["max_seq_length"],
-                packing=False,
-                dataset_num_proc=1,
-                per_device_train_batch_size=cfg["per_device_train_batch_size"],
-                per_device_eval_batch_size=1,
-                gradient_accumulation_steps=cfg["gradient_accumulation_steps"],
-                num_train_epochs=cfg["num_train_epochs"],
-                max_steps=max_steps if max_steps > 0 else -1,
-                learning_rate=cfg["learning_rate"],
-                warmup_ratio=cfg["warmup_ratio"],
-                lr_scheduler_type=cfg["lr_scheduler_type"],
-                weight_decay=cfg["weight_decay"],
-                logging_steps=max(1, min(int(cfg["logging_steps"]), total_steps // 40)),
-                eval_strategy="steps" if has_eval else "no",
-                eval_steps=interval if has_eval else None,
-                save_strategy="steps",
-                save_steps=interval,
-                save_total_limit=cfg["save_total_limit"],
-                load_best_model_at_end=patience > 0,
-                metric_for_best_model="eval_loss" if patience > 0 else None,
-                greater_is_better=False if patience > 0 else None,
-                bf16=use_bf16,
-                fp16=not use_bf16,
-                optim="adamw_8bit",
-                seed=cfg["seed"],
-                report_to="none",
-                dataloader_num_workers=0,
-                remove_unused_columns=True,
-            ),
-        ),
+    args = SFTConfig(
+        **{
+            **overrides,
+            "output_dir": str(output_dir),
+            # 超长样本在上面已经丢掉，这里不让 TRL 再截断章末。
+            "max_length": None,
+            "packing": False,
+            "completion_only_loss": True,
+            "bf16": use_bf16,
+            "fp16": not use_bf16,
+            "logging_steps": max(1, min(int(overrides.get("logging_steps", 10)), total_steps // 40)),
+            "eval_strategy": "steps" if has_eval else "no",
+            "eval_steps": interval if has_eval else None,
+            "save_strategy": "steps",
+            "save_steps": interval,
+            "load_best_model_at_end": patience > 0,
+            "metric_for_best_model": "eval_loss" if patience > 0 else None,
+            "greater_is_better": False if patience > 0 else None,
+        }
     )
-    trainer = train_on_responses_only(
-        trainer,
-        instruction_part="<|im_start|>user\n",
-        response_part="<|im_start|>assistant\n",
+    trainer = SFTTrainer(
+        model=model,
+        args=args,
+        train_dataset=train_ds,
+        eval_dataset=eval_ds,
+        processing_class=tokenizer,
     )
     check_response_mask(trainer)
     attach_jsonl_callback(trainer, output_dir / "metrics.jsonl")

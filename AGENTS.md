@@ -4,7 +4,10 @@
 
 这个仓库在一张 RTX 4090 上，把用户自己的长篇切成「命题 → 一整章正文」（分不分章都行），再用 Unsloth 对 `unsloth/Qwen3.5-4B` 或 `unsloth/Qwen3.5-9B`（每个项目自己选）做 bf16 LoRA。目标是给一个命题就能写出长文，不要把样本回答改回两三百字。
 
-- 命令从仓库根目录运行，使用 `.venv`。常用入口在根目录 `package.json`（`pnpm start` 一键启动，`pnpm lint`、`pnpm build`），逻辑放在 `start.ps1`、`setup.ps1` 和 Python 模块里，`package.json` 只做转发。
+- 命令从仓库根目录运行，Python 一律走 `pixi run`（环境在 `.pixi/envs/default`）。常用入口在根目录 `package.json`（`pnpm start` 一键启动，`pnpm lint`、`pnpm build`），逻辑放在 `start.ps1`、`setup.ps1`、`pyproject.toml` 的 pixi 任务和 Python 模块里，`package.json` 只做转发。
+- 依赖写在 `pyproject.toml`：运行时依赖放 `[project].dependencies` 并钉死版本，pixi 自己的工具放 `[tool.pixi.dependencies]`。改完运行 `pixi lock`，看过 `pyproject.toml` 和 `pixi.lock` 的 diff 再跑 `pixi lock --check`。不要手改 `pixi.lock`，不要在环境里直接 `pip install`。改 pixi 配置前读 `.agents/skills/use-pixi/SKILL.md`，换 PyTorch 版本前读 `.agents/skills/install-torch/SKILL.md` 和 `.agents/skills/setup-torch/SKILL.md`。
+- 和模板不同的两处：平台只锁 `win-64`，这个项目依赖 PowerShell 和 Windows 进程接口；PyTorch 只装 `torch` 和 `torchvision`，官方 CUDA 源上 Windows 版 `torchaudio` 停在 2.11.1，项目也不用它。
+- 这台机器上的 Python 不能在用户 AppData 里建文件。直接调 pixi 时先设 `PIXI_CACHE_DIR=E:/train-novel/.cache/pixi`，`setup.ps1` 和 `start.ps1` 已经设好。
 - 每次训练任务属于一个项目，数据和产物都在 `projects/<项目>/` 下，不要跨项目共用。小说只放项目的 `raw/`。以「示例」开头的文件在有正式书时会被跳过。
 - 训练集里只有示例书时，不要启动训练。
 - 前端改完在 `web` 里跑 `pnpm lint` 和 `pnpm build`。

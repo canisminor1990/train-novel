@@ -11,7 +11,11 @@ Set-Location $PSScriptRoot
 $env:PYTHONIOENCODING = "utf-8"
 
 $Url = "http://127.0.0.1:8765"
-$Python = ".\.venv\Scripts\python.exe"
+$env:PIXI_CACHE_DIR = Join-Path $PSScriptRoot ".cache\pixi"
+$PixiBin = Join-Path $env:USERPROFILE ".pixi\bin"
+if (-not (Get-Command pixi -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $PixiBin "pixi.exe"))) {
+    $env:PATH = "$PixiBin;$env:PATH"
+}
 
 function Step([string]$text) { Write-Host "`n▶ $text" -ForegroundColor Cyan }
 function Fail([string]$text) { Write-Host "`n✖ $text" -ForegroundColor Red; exit 1 }
@@ -37,10 +41,11 @@ if (Test-Http "$Url/api/state") {
 }
 
 # 1. Python 环境
-if (-not (Test-Path $Python)) {
+if (-not (Get-Command pixi -ErrorAction SilentlyContinue) -or -not (Test-Path .\.pixi\envs\default\python.exe)) {
     Step "第一次运行，先安装 Python 环境（Unsloth、CUDA 版 PyTorch），需要几分钟到几十分钟"
     & powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
     if ($LASTEXITCODE -ne 0) { Fail "环境安装没有完成，看上面的报错。" }
+    if (-not (Get-Command pixi -ErrorAction SilentlyContinue)) { $env:PATH = "$PixiBin;$env:PATH" }
 }
 
 # 2. 前端
@@ -114,5 +119,5 @@ if (-not $NoBrowser) {
         }
     } | Out-Null
 }
-& $Python -m novel_train.dashboard
+& pixi run --locked dashboard
 exit $LASTEXITCODE

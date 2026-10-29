@@ -10,7 +10,7 @@ description: >-
 
 # 训练小说模型
 
-仓库根目录是 `E:/train-novel`。用 `.venv` 里的 Python。先读 `AGENTS.md`。
+仓库根目录是 `E:/train-novel`。Python 走 `pixi run`，依赖和版本在 `pyproject.toml` 与 `pixi.lock`。先读 `AGENTS.md`。
 
 ## 项目
 
@@ -27,7 +27,7 @@ projects/<项目>/runs/r-时间/         一次运行：run.json、config.json�
 projects/.active.json               显卡锁。同一时间只跑一个训练或导出
 ```
 
-每个项目一次导出挂两个 Ollama 模型：`novel-<项目>` 的模板预先闭合思考，只出正文；`novel-<项目>-think` 保留思考。两个模型的上下文都是 65536（约 5GB 显存），看板前情上限 3 万字，正文最多 8000 字。Modelfile 带训练时的 system 提示和 min_p 采样。挂载前会删掉 GGUF 里的 `tokenizer.chat_template`：Ollama 发现内嵌的 Qwen3.5 模板声明了工具和思考，就会忽略 Modelfile 的 `TEMPLATE`，而那份模板默认开思考。从旧目录 `data/raw` 和 `outputs/sft` 迁移来的项目叫 `legacy-sft`，模型名保留 `novel-sft`，思考版是 `novel-sft-think`。
+每个项目一次导出挂两个 Ollama 模型：`novel-<项目>` 的模板预先闭合思考，只出正文；`novel-<项目>-think` 保留思考。两个模型的上下文都是 65536（约 5GB 显存），看板前情上限 3 万字，正文最多 8000 字。Modelfile 带训练时的 system 提示和 min_p 采样。挂载前会删掉 GGUF 里的 `tokenizer.chat_template`：Ollama 发现内嵌的 Qwen3.5 模板声明了工具和思考，就会忽略 Modelfile 的 `TEMPLATE`，而那份模板默认开思考。Modelfile 自己的模板在有 `.Tools` 时写出 Qwen3.5 的 XML 工具说明，并设置 `PARSER qwen3-coder`，所以 harness 可以带工具；没有工具时正文模型仍预先闭合思考。从旧目录 `data/raw` 和 `outputs/sft` 迁移来的项目叫 `legacy-sft`，模型名保留 `novel-sft`，思考版是 `novel-sft-think`。
 
 ## 数据
 
@@ -65,7 +65,10 @@ python -m novel_train.jobs --project <项目> --run <运行> --export-only
 运行目录由看板的「开始训练」创建（`runs.create_run`），它会冻结样本和配置。
 
 - 保持 `enable_thinking` 关闭。样本只学正文。
+- 样本按 TRL 的 prompt / completion 对话格式交给 `SFTTrainer`，由 `completion_only_loss` 掩掉命题和前情。不要再手动渲染模板、用字符串找回答位置。
 - 回答掩码失败时先停，不要改成训练整段 prompt。
+- LoRA 不写 `target_modules`（配置里 `lora_target_modules: null`），由 Unsloth 选语言部分的全部线性层。Qwen3.5 每 4 层里有 3 层是线性注意力（`in_proj_qkv`、`in_proj_z`、`out_proj`），只写 `q_proj` 这类名字会漏掉它们。
+- 配置里模型、LoRA、数据之外的字段原样传给 `SFTConfig`，写错名字会直接报错。导入 Unsloth 后 `SFTConfig` 会静默吞掉不认识的参数，所以不要绕过 `sft_overrides` 的检查。transformers 5 没有 `warmup_ratio`，用小于 1 的 `warmup_steps` 表示比例。
 - 断点和验证按步数，每次约 1/8 的总步数。标准和细读在验证 loss 连续两次不降时早停，并回到最低的那版。
 - 终端写作用 `python -m novel_train.infer --project <项目> --premise "命题" --length 5000`，可加 `--context-file 前情.txt`，默认取当前挂载的运行。一次要 4000 到 6500 字最稳。
 - CPT 不是第一步。用户明确要求时再用 `configs/cpt_4090.json`。

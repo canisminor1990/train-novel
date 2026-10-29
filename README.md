@@ -6,13 +6,13 @@
 
 ## 快速开始
 
-需要：Windows、NVIDIA 显卡驱动、Python 3.12。[Ollama](https://ollama.com/download) 用来挂载和续写，没装也能训练。[Node.js](https://nodejs.org) 22+ 只在改了界面、需要重新构建时用到。
+需要：Windows、NVIDIA 显卡驱动。Python 3.12 和全部依赖由 [pixi](https://pixi.sh) 按 `pixi.lock` 装进 `.pixi/`，没装 pixi 时 `setup.ps1` 会自动装。[Ollama](https://ollama.com/download) 用来挂载和续写，没装也能训练。[Node.js](https://nodejs.org) 22+ 只在改了界面、需要重新构建时用到。
 
 **双击根目录的 `start.bat`。**
 
 它会依次：
 
-1. 第一次运行时调用 `setup.ps1` 装好 Python 环境（Unsloth、CUDA 版 PyTorch），之后跳过
+1. 第一次运行时调用 `setup.ps1`，用 pixi 装好 Python 环境（Unsloth、CUDA 版 PyTorch），之后跳过
 2. 界面源码有改动时重新构建页面
 3. Ollama 没在运行就把它拉起来
 4. 启动训练台，浏览器打开 http://127.0.0.1:8765
@@ -101,14 +101,16 @@
 | `pnpm write -- --project <项目> --premise "命题" --length 5000` | 在终端按命题写一章 |
 | `pnpm web:dev` | 界面开发服务器（接口转发到 8765） |
 | `pnpm build` | 构建界面到 `web/dist` |
-| `pnpm lint` | tsc、eslint、stylelint、lobe-design 检查和清洗自检 |
+| `pnpm lint` | tsc、eslint、stylelint、lobe-design 检查、ruff 和清洗自检 |
+
+这些命令转发到 `pyproject.toml` 里的 pixi 任务，也可以直接 `pixi run <任务>`。
 
 训练和导出由训练台的「开始训练」发起。它会新建一个运行目录，冻结当时的样本和配置，再在后台跑：
 
 ```powershell
-.\.venv\Scripts\python.exe -m novel_train.jobs --project <项目> --run <运行>            # 训练 → 导出 → 挂载
-.\.venv\Scripts\python.exe -m novel_train.jobs --project <项目> --run <运行> --resume   # 从断点继续
-.\.venv\Scripts\python.exe -m novel_train.jobs --project <项目> --run <运行> --export-only
+pixi run python -m novel_train.jobs --project <项目> --run <运行>            # 训练 → 导出 → 挂载
+pixi run python -m novel_train.jobs --project <项目> --run <运行> --resume   # 从断点继续
+pixi run python -m novel_train.jobs --project <项目> --run <运行> --export-only
 ```
 
 终端写作默认用项目当前挂载的那次运行。`--context-file` 可以带一段前情。一次写一章：命题写清谁出场、在哪、发生什么、停在哪；写长篇时一章一章来，把上一章结尾贴进前情。
@@ -117,7 +119,8 @@
 
 ```
 start.bat / start.ps1            一键启动
-setup.ps1                        安装 Python 环境
+setup.ps1                        用 pixi 安装 Python 环境
+pyproject.toml / pixi.lock       依赖和锁定的版本
 novel_train/                     清洗、训练、导出和训练台后端
 web/                             训练台界面（Vite + @lobehub/ui）
 configs/                         训练基础配置
@@ -128,7 +131,7 @@ projects/<项目>/runs/r-时间/       一次运行：样本和配置副本、�
 
 `projects/`、`outputs/`、`.env` 不进 git。旧版的 `data/raw` 和 `outputs/sft` 会在第一次打开训练台时迁移成项目「第一本书」，Ollama 模型名仍是 `novel-sft`。
 
-模型缓存在 `.cache\huggingface`，下载走 `hf-mirror.com`。`setup.ps1` 装到 CPU 版 PyTorch 时，会改从南京大学或上海交大镜像装 CUDA 版。
+模型缓存在 `.cache\huggingface`，下载走 `hf-mirror.com`。PyTorch 从官方 CUDA 13.2 源装，版本锁在 `pixi.lock`；pixi 自己的缓存在 `.cache\pixi`。改依赖用 `pixi add` 再提交 `pixi.lock`，不要在环境里直接 `pip install`。
 
 ## 常见问题
 
@@ -162,7 +165,7 @@ pnpm build
 **领域续训 CPT。** SFT 的文风已经够用时，可以先不做。CPT 用基座模型（不是 Instruct）先浸泡原文，再在上面做 SFT。语料很大时，单卡以天计。
 
 ```powershell
-.\.venv\Scripts\python.exe -m novel_train.train_cpt --config configs\cpt_4090.json
+pixi run python -m novel_train.train_cpt --config configs\cpt_4090.json
 ```
 
 **更大的模型。** 4B 和 9B 在训练台里直接选。Qwen3.6 的 27B 需要大约 56GB，这张卡装不下。

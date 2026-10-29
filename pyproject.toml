@@ -1,0 +1,62 @@
+[project]
+name = "train-novel"
+version = "0.1.0"
+description = "RTX 4090 上用 Unsloth 对 Qwen3.5-4B / 9B 做 bf16 LoRA，学自己长篇的文风，按命题写整章"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+  "torch==2.14.1",
+  "torchvision==0.29.1",
+  "unsloth==2026.10.9",
+  "unsloth-zoo==2026.10.9",
+  "transformers==5.17.0",
+  "trl==1.15.0",
+  "peft==0.21.2",
+  "accelerate==1.15.0",
+  "datasets==4.8.5",
+  "bitsandbytes==0.50.2",
+  "fsspec==2026.2.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.31,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["novel_train"]
+
+[tool.pixi.workspace]
+name = "train-novel"
+channels = ["conda-forge"]
+platforms = ["win-64"]
+requires-pixi = ">=0.71,<1"
+
+[tool.pixi.dependencies]
+python = "3.12.*"
+pip = "*"
+ruff = ">=0.15.22,<0.16"
+
+[tool.pixi.pypi-dependencies]
+train-novel = { path = ".", editable = true }
+
+[tool.pixi.target.win-64.pypi-dependencies]
+torch = { version = "==2.14.1", index = "https://download.pytorch.org/whl/cu132" }
+torchvision = { version = "==0.29.1", index = "https://download.pytorch.org/whl/cu132" }
+
+[tool.pixi.tasks]
+check-env = "python -m novel_train.check"
+dashboard = "python -m novel_train.dashboard"
+data = "python -m novel_train.prepare"
+data-check = "python -m novel_train.prepare --self-check"
+write = "python -m novel_train.infer"
+lint = "ruff check novel_train"
+format = "ruff format novel_train"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["novel_train"]
+
+[tool.ruff.lint.per-file-ignores]
+# 这几个入口要先 load_project_env()，把 HF 缓存和镜像设好，再导入 Unsloth 和 transformers。
+"novel_train/{infer,premise,train_cpt,train_sft}.py" = ["E402"]
