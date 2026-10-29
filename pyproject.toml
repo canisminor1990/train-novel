@@ -15,7 +15,7 @@ dependencies = [
   "accelerate==1.15.0",
   "datasets==4.8.5",
   "bitsandbytes==0.50.2",
-  "fsspec==2026.2.0",
+  "fsspec==2026.6.0",
 ]
 
 [build-system]
